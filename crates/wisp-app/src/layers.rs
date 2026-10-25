@@ -116,95 +116,263 @@ impl Layer {
         self.frequency = if effect == Effect::Clothing { 2.5 } else { 1.2 };
         self.speed = if effect == Effect::Hair { 1.5 } else { 1. };
     }
-    pub fn value(&self, id: &str) -> f32 {
+    pub fn value(&self, id: ControlId) -> f32 {
         match id {
-            "x" => self.position[0],
-            "y" => self.position[1],
-            "sx" => self.scale[0],
-            "sy" => self.scale[1],
-            "px" => self.pivot[0],
-            "py" => self.pivot[1],
-            "rotation" => self.rotation,
-            "opacity" => self.opacity,
-            "direction" => self.direction,
-            "amplitude" => self.amplitude,
-            "frequency" => self.frequency,
-            "speed" => self.speed,
-            "density" => self.density,
-            "size" => self.size,
-            "rain_direction" => self.rain_direction,
-            "size_x" => self.size_x,
-            "size_y" => self.size_y,
-            "strength" => self.strength,
-            "feather" => self.mask.as_ref().map_or(0., |m| m.feather),
-            _ => 0.,
+            ControlId::PositionX => self.position[0],
+            ControlId::PositionY => self.position[1],
+            ControlId::ScaleX => self.scale[0],
+            ControlId::ScaleY => self.scale[1],
+            ControlId::PivotX => self.pivot[0],
+            ControlId::PivotY => self.pivot[1],
+            ControlId::Rotation => self.rotation,
+            ControlId::Opacity => self.opacity,
+            ControlId::Direction => self.direction,
+            ControlId::Amplitude => self.amplitude,
+            ControlId::Frequency => self.frequency,
+            ControlId::Speed => self.speed,
+            ControlId::Density => self.density,
+            ControlId::Size => self.size,
+            ControlId::RainDirection => self.rain_direction,
+            ControlId::SizeX => self.size_x,
+            ControlId::SizeY => self.size_y,
+            ControlId::Strength => self.strength,
+            ControlId::Feather => self.mask.as_ref().map_or(0., |m| m.feather),
         }
     }
-    pub fn set_value(&mut self, id: &str, value: f32) -> Result<()> {
-        let c = CONTROLS
-            .iter()
-            .find(|c| c.0 == id)
-            .context("unknown layer control")?;
+    pub fn set_value(
+        &mut self,
+        id: impl TryInto<ControlId, Error: std::fmt::Display>,
+        value: f32,
+    ) -> Result<()> {
+        let id = id.try_into().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let control = id.metadata();
         ensure!(
-            value.is_finite() && (c.2..=c.3).contains(&value),
+            value.is_finite() && (control.min..=control.max).contains(&value),
             "layer control out of range"
         );
         match id {
-            "x" => self.position[0] = value,
-            "y" => self.position[1] = value,
-            "sx" => self.scale[0] = value,
-            "sy" => self.scale[1] = value,
-            "px" => self.pivot[0] = value,
-            "py" => self.pivot[1] = value,
-            "rotation" => self.rotation = value,
-            "opacity" => self.opacity = value,
-            "direction" => self.direction = value,
-            "amplitude" => self.amplitude = value,
-            "frequency" => self.frequency = value,
-            "speed" => self.speed = value,
-            "density" => self.density = value,
-            "size" => self.size = value,
-            "rain_direction" => self.rain_direction = value,
-            "size_x" => self.size_x = value,
-            "size_y" => self.size_y = value,
-            "strength" => self.strength = value,
-            "feather" => {
-                if let Some(m) = &mut self.mask {
-                    m.feather = value
-                }
+            ControlId::PositionX => self.position[0] = value,
+            ControlId::PositionY => self.position[1] = value,
+            ControlId::ScaleX => self.scale[0] = value,
+            ControlId::ScaleY => self.scale[1] = value,
+            ControlId::PivotX => self.pivot[0] = value,
+            ControlId::PivotY => self.pivot[1] = value,
+            ControlId::Rotation => self.rotation = value,
+            ControlId::Opacity => self.opacity = value,
+            ControlId::Direction => self.direction = value,
+            ControlId::Amplitude => self.amplitude = value,
+            ControlId::Frequency => self.frequency = value,
+            ControlId::Speed => self.speed = value,
+            ControlId::Density => self.density = value,
+            ControlId::Size => self.size = value,
+            ControlId::RainDirection => self.rain_direction = value,
+            ControlId::SizeX => self.size_x = value,
+            ControlId::SizeY => self.size_y = value,
+            ControlId::Strength => self.strength = value,
+            ControlId::Feather => {
+                self.mask.as_mut().context("layer has no mask")?.feather = value;
             }
-            _ => {}
         }
         Ok(())
     }
 }
-/// (key, label, minimum, maximum); angles are degrees in authoring UI.
-pub const CONTROLS: &[(&str, &str, f32, f32)] = &[
-    ("opacity", "Opacity", 0., 1.),
-    ("x", "Position X", -1., 1.),
-    ("y", "Position Y", -1., 1.),
-    ("sx", "Scale X", 0.05, 3.),
-    ("sy", "Scale Y", 0.05, 3.),
-    ("rotation", "Rotation", -180., 180.),
-    ("px", "Pivot X", 0., 1.),
-    ("py", "Pivot Y", 0., 1.),
-    ("feather", "Mask feather", 0., 0.05),
-    ("direction", "Motion direction", -180., 180.),
-    ("amplitude", "Motion amplitude", 0., 0.15),
-    ("frequency", "Motion frequency", 0., 16.),
-    ("speed", "Effect speed", 0., 5.),
-    ("density", "Weather density", 1., 32.),
-    ("size", "Weather size", 0.03, 0.45),
-    (
-        "rain_direction",
-        "Rain direction (0° down, 90° right)",
-        -180.,
-        180.,
-    ),
-    ("size_x", "Water width (X)", 0.2, 2.),
-    ("size_y", "Water height (Y)", 0.2, 2.),
-    ("strength", "Distortion / effect strength", 0., 1.),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlId {
+    Opacity,
+    PositionX,
+    PositionY,
+    ScaleX,
+    ScaleY,
+    Rotation,
+    PivotX,
+    PivotY,
+    Feather,
+    Direction,
+    Amplitude,
+    Frequency,
+    Speed,
+    Density,
+    Size,
+    RainDirection,
+    SizeX,
+    SizeY,
+    Strength,
+}
+pub struct Control {
+    pub id: ControlId,
+    pub key: &'static str,
+    pub label: &'static str,
+    pub min: f32,
+    pub max: f32,
+}
+impl ControlId {
+    pub fn metadata(self) -> &'static Control {
+        CONTROLS
+            .iter()
+            .find(|control| control.id == self)
+            .expect("every control has metadata")
+    }
+}
+impl TryFrom<&str> for ControlId {
+    type Error = anyhow::Error;
+    fn try_from(key: &str) -> Result<Self> {
+        CONTROLS
+            .iter()
+            .find(|control| control.key == key)
+            .map(|control| control.id)
+            .context("unknown layer control")
+    }
+}
+pub const CONTROLS: &[Control] = &[
+    Control {
+        id: ControlId::Opacity,
+        key: "opacity",
+        label: "Opacity",
+        min: 0.,
+        max: 1.,
+    },
+    Control {
+        id: ControlId::PositionX,
+        key: "x",
+        label: "Position X",
+        min: -1.,
+        max: 1.,
+    },
+    Control {
+        id: ControlId::PositionY,
+        key: "y",
+        label: "Position Y",
+        min: -1.,
+        max: 1.,
+    },
+    Control {
+        id: ControlId::ScaleX,
+        key: "sx",
+        label: "Scale X",
+        min: 0.05,
+        max: 3.,
+    },
+    Control {
+        id: ControlId::ScaleY,
+        key: "sy",
+        label: "Scale Y",
+        min: 0.05,
+        max: 3.,
+    },
+    Control {
+        id: ControlId::Rotation,
+        key: "rotation",
+        label: "Rotation",
+        min: -180.,
+        max: 180.,
+    },
+    Control {
+        id: ControlId::PivotX,
+        key: "px",
+        label: "Pivot X",
+        min: 0.,
+        max: 1.,
+    },
+    Control {
+        id: ControlId::PivotY,
+        key: "py",
+        label: "Pivot Y",
+        min: 0.,
+        max: 1.,
+    },
+    Control {
+        id: ControlId::Feather,
+        key: "feather",
+        label: "Mask feather",
+        min: 0.,
+        max: 0.05,
+    },
+    Control {
+        id: ControlId::Direction,
+        key: "direction",
+        label: "Motion direction",
+        min: -180.,
+        max: 180.,
+    },
+    Control {
+        id: ControlId::Amplitude,
+        key: "amplitude",
+        label: "Motion amplitude",
+        min: 0.,
+        max: 0.15,
+    },
+    Control {
+        id: ControlId::Frequency,
+        key: "frequency",
+        label: "Motion frequency",
+        min: 0.,
+        max: 16.,
+    },
+    Control {
+        id: ControlId::Speed,
+        key: "speed",
+        label: "Effect speed",
+        min: 0.,
+        max: 5.,
+    },
+    Control {
+        id: ControlId::Density,
+        key: "density",
+        label: "Weather density",
+        min: 1.,
+        max: 32.,
+    },
+    Control {
+        id: ControlId::Size,
+        key: "size",
+        label: "Weather size",
+        min: 0.03,
+        max: 0.45,
+    },
+    Control {
+        id: ControlId::RainDirection,
+        key: "rain_direction",
+        label: "Rain direction (0° down, 90° right)",
+        min: -180.,
+        max: 180.,
+    },
+    Control {
+        id: ControlId::SizeX,
+        key: "size_x",
+        label: "Water width (X)",
+        min: 0.2,
+        max: 2.,
+    },
+    Control {
+        id: ControlId::SizeY,
+        key: "size_y",
+        label: "Water height (Y)",
+        min: 0.2,
+        max: 2.,
+    },
+    Control {
+        id: ControlId::Strength,
+        key: "strength",
+        label: "Distortion / effect strength",
+        min: 0.,
+        max: 1.,
+    },
 ];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportTarget {
+    Layer,
+    Mask(usize),
+    Displacement(usize),
+}
+impl From<Option<(usize, bool)>> for ImportTarget {
+    fn from(target: Option<(usize, bool)>) -> Self {
+        match target {
+            None => Self::Layer,
+            Some((index, false)) => Self::Mask(index),
+            Some((index, true)) => Self::Displacement(index),
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stack {
@@ -235,8 +403,12 @@ impl Stack {
             );
             ensure!(self.assets.contains_key(&l.asset), "missing layer image");
             for c in CONTROLS {
-                let v = l.value(c.0);
-                ensure!(v.is_finite() && (c.2..=c.3).contains(&v), "invalid {}", c.1);
+                let v = l.value(c.id);
+                ensure!(
+                    v.is_finite() && (c.min..=c.max).contains(&v),
+                    "invalid {}",
+                    c.label
+                );
             }
             if let Some(m) = &l.mask {
                 ensure!(self.assets.contains_key(&m.asset), "missing mask image");
@@ -256,15 +428,16 @@ impl Stack {
         Arc::make_mut(&mut self.assets).insert(id.clone(), asset);
         Ok(id)
     }
-    pub fn import(&mut self, path: &Path, target: Option<(usize, bool)>) -> Result<()> {
+    pub fn import(&mut self, path: &Path, target: impl Into<ImportTarget>) -> Result<()> {
+        let target = target.into();
         let bytes = wisp_compiler::read_source_image(path)?;
         let decoded = wisp_compiler::decode_source_image(&bytes)?;
-        if let Some((i, _)) = target {
+        if let ImportTarget::Mask(i) | ImportTarget::Displacement(i) = target {
             ensure!(i < self.layers.len(), "missing layer");
         } else {
             ensure!(self.layers.len() < 6, "maximum six layers");
         }
-        let asset = if matches!(target, Some((_, false))) {
+        let asset = if matches!(target, ImportTarget::Mask(_)) {
             let image = decoded.into_rgba8();
             let gray = image::GrayImage::from_fn(image.width(), image.height(), |x, y| {
                 let p = image.get_pixel(x, y).0;
@@ -289,8 +462,8 @@ impl Stack {
             }
         };
         let id = self.insert(asset)?;
-        if let Some((i, displacement)) = target {
-            if displacement {
+        if let ImportTarget::Mask(i) | ImportTarget::Displacement(i) = target {
+            if matches!(target, ImportTarget::Displacement(_)) {
                 self.layers[i].displacement = Some(id);
             } else {
                 self.layers[i].mask = Some(Mask {
@@ -607,5 +780,35 @@ impl Builder<'_> {
     }
     fn constant(&mut self, value: V) -> String {
         self.add(Op::Constant { value })
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    #[test]
+    fn every_control_round_trips_and_rejects_invalid_values_without_mutation() {
+        let mut layer = Layer::new("test".into(), "image".into());
+        layer.mask = Some(Mask {
+            asset: "mask".into(),
+            feather: 0.,
+            invert: false,
+            composition: false,
+            effect: true,
+        });
+        for control in CONTROLS {
+            assert_eq!(ControlId::try_from(control.key).unwrap(), control.id);
+            for value in [control.min, (control.min + control.max) / 2., control.max] {
+                layer.set_value(control.id, value).unwrap();
+                assert_eq!(layer.value(control.id), value, "{}", control.key);
+            }
+            for value in [f32::NAN, f32::INFINITY, control.max + 1., control.min - 1.] {
+                assert!(layer.set_value(control.id, value).is_err());
+                assert_eq!(layer.value(control.id), control.max);
+            }
+        }
+        assert!(layer.set_value("unknown", 0.).is_err());
+        layer.mask = None;
+        assert!(layer.set_value(ControlId::Feather, 0.01).is_err());
     }
 }

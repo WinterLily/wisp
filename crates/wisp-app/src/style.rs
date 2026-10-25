@@ -60,7 +60,9 @@ pub(super) fn quiet(theme: &Theme, status: button::Status) -> button::Style {
 pub(super) fn selected(theme: &Theme, status: button::Status) -> button::Style {
     let mut style = quiet(theme, status);
     style.background = Some(theme.extended_palette().background.weak.color.into());
-    style.text_color = theme.palette().primary;
+    if status != button::Status::Disabled {
+        style.text_color = theme.palette().primary;
+    }
     style
 }
 
@@ -89,5 +91,26 @@ pub(super) fn stage(theme: &Theme) -> container::Style {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn selected_disabled_buttons_keep_disabled_feedback() {
+        for dark in [false, true] {
+            let theme = theme(dark);
+            let disabled = selected(&theme, button::Status::Disabled);
+            assert_eq!(
+                disabled.text_color,
+                quiet(&theme, button::Status::Disabled).text_color
+            );
+            assert_ne!(
+                disabled.text_color,
+                selected(&theme, button::Status::Active).text_color
+            );
+            assert!(disabled.background.is_some());
+        }
     }
 }
