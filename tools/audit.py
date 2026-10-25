@@ -471,7 +471,7 @@ class Audit:
         package = self.output / "graph.wisp"
         self.app("graph", ["--graph", ROOT / "examples/graph-fused"], [
             command("graph_new"), ready(graph_valid=True, graph_nodes=2, preview_ready=True),
-            command("graph_select", id="color"), command("graph_panel", value="properties"),
+            command("graph_select", id="color"),
             command("graph_field_edit", id="value", value="[0.2,"),
             command("graph_field", id="value", value="[0.2,"),
             assertion(graph_valid=True, preview_ready=True, status_contains="Edit rejected"),
