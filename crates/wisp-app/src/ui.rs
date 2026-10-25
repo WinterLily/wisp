@@ -980,7 +980,7 @@ impl App {
             || (self.page == Page::Designer && self.designer.preview.is_some())
             || (self.page == Page::Graph && self.graph.preview.is_some()))
             && !self.preview_paused
-            && (self.focused || self.frame_limit.is_some())
+            && (self.focused || self.frame_limit.is_some() || !self.audit_commands.is_empty())
         {
             subscriptions.push(
                 iced::time::every(Duration::from_secs_f64(

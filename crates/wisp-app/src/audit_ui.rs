@@ -815,6 +815,51 @@ mod tests {
         }
     }
     #[test]
+    fn unfocused_audits_subscribe_preview_ticks_while_honoring_explicit_pause() {
+        let wallpaper = Arc::new(
+            Wallpaper::from_package(&crate::graph::Document::default().compile().unwrap().package)
+                .unwrap(),
+        );
+        for page in [Page::Library, Page::Designer, Page::Graph] {
+            let (_dir, mut app) = app();
+            app.page = page;
+            let preview = Some(Preview {
+                generation: 1,
+                wallpaper: wallpaper.clone(),
+                parameters: Default::default(),
+                globals: Globals::new(1, 1),
+                status: Default::default(),
+            });
+            match page {
+                Page::Library => app.preview = preview,
+                Page::Designer => app.designer.preview = preview,
+                Page::Graph => app.graph.preview = preview,
+                _ => unreachable!(),
+            }
+            let _ = app.update(Message::Event(iced::Event::Window(
+                iced::window::Event::Unfocused,
+            )));
+            let background_subscriptions = app.subscription().units();
+            let _ = app.update(Message::Event(iced::Event::Window(
+                iced::window::Event::Focused,
+            )));
+            assert_eq!(app.subscription().units(), background_subscriptions + 1);
+            let _ = app.update(Message::Event(iced::Event::Window(
+                iced::window::Event::Unfocused,
+            )));
+            app.audit_commands =
+                serde_json::from_str(r#"[{"command":"wait_for","state":{"preview_ready":true}}]"#)
+                    .unwrap();
+            let _ = app.update(Message::PausePreview);
+            let audit_subscriptions = app.subscription().units();
+            assert_eq!(audit_subscriptions, background_subscriptions + 1);
+            let _ = app.update(Message::PausePreview);
+            assert_eq!(app.subscription().units(), audit_subscriptions + 1);
+            app.audit_commands.clear();
+            assert_eq!(app.subscription().units(), background_subscriptions);
+        }
+    }
+    #[test]
     fn scripts_reject_finish_before_the_last_command() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("commands.json");
