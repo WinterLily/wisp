@@ -21,6 +21,19 @@ pub enum Effect {
     Ripples,
 }
 impl Effect {
+    pub fn controls(self) -> &'static [ControlId] {
+        use ControlId::*;
+        match self {
+            Self::None => &[],
+            Self::Hair | Self::Clothing | Self::Wave | Self::Warp => {
+                &[Direction, Amplitude, Frequency, Speed]
+            }
+            Self::Displacement => &[Strength],
+            Self::Droplets | Self::Ripples => &[Speed, Density, Size, SizeX, SizeY, Strength],
+            Self::Rain => &[Speed, Density, Size, RainDirection, SizeX, SizeY, Strength],
+        }
+    }
+
     pub const ALL: [Self; 9] = [
         Self::None,
         Self::Hair,

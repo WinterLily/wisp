@@ -8,11 +8,10 @@ use layer_ui::LayerMessage;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DesignerPanel {
     Layers,
-    Effects,
     Project,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DesignEffect {
     Parallax,
     Pulse,
@@ -20,9 +19,60 @@ pub(super) enum DesignEffect {
     Vignette,
 }
 
+impl DesignEffect {
+    pub(super) const ALL: [Self; 4] = [Self::Vignette, Self::Blur, Self::Pulse, Self::Parallax];
+
+    pub(super) fn key(self) -> &'static str {
+        match self {
+            Self::Parallax => "parallax",
+            Self::Pulse => "pulse",
+            Self::Blur => "blur",
+            Self::Vignette => "vignette",
+        }
+    }
+
+    fn enabled(self, design: &crate::designer::Design) -> bool {
+        match self {
+            Self::Parallax => design.parallax,
+            Self::Pulse => design.pulse,
+            Self::Blur => design.blur,
+            Self::Vignette => design.vignette,
+        }
+    }
+
+    fn controls(self) -> &'static [&'static str] {
+        match self {
+            Self::Parallax => &["parallax"],
+            Self::Pulse => &["pulse", "speed"],
+            Self::Blur => &["radius"],
+            Self::Vignette => &["vignette"],
+        }
+    }
+}
+
+impl std::fmt::Display for DesignEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Parallax => "Mouse parallax",
+            Self::Pulse => "Breathing light",
+            Self::Blur => "Soft blur",
+            Self::Vignette => "Vignette",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum DesignerSelection {
+    #[default]
+    Image,
+    Effect(DesignEffect),
+    Color,
+}
+
 #[derive(Clone)]
 pub(super) enum DesignerMessage {
     Panel(DesignerPanel),
+    Select(DesignerSelection),
     Layer(LayerMessage),
     Browse(bool),
     Open(PathBuf),
@@ -42,6 +92,7 @@ pub(super) enum DesignerMessage {
 #[derive(Default)]
 pub(super) struct Designer {
     pub panel: Option<DesignerPanel>,
+    pub selection: DesignerSelection,
     pub layer_tab: layer_ui::LayerTab,
     pub draft: Option<Arc<Draft>>,
     pub preview: Option<Preview>,
@@ -90,6 +141,16 @@ impl App {
         match message {
             Panel(panel) => {
                 self.designer.panel = (self.designer.panel != Some(panel)).then_some(panel);
+            }
+            Select(selection) if !self.busy => {
+                if let Err(error) = self.flush_paint() {
+                    self.status = format!("Could not preserve mask: {error:#}");
+                    return Task::none();
+                }
+                self.designer.selection = selection;
+                self.designer.panel = Some(DesignerPanel::Layers);
+                self.designer.lasso_vertices.clear();
+                self.designer.paint_session += 1;
             }
             Layer(m) => return self.layer_update(m),
             PaintTick(now) if self.designer.paint_due(now) && !self.busy => {
@@ -151,6 +212,8 @@ impl App {
                 match result {
                     Ok(Some((draft, saved))) => {
                         self.designer.layer = 0;
+                        self.designer.selection = DesignerSelection::Image;
+                        self.designer.panel = Some(DesignerPanel::Layers);
                         self.designer.brush = 0.06;
                         self.designer.draft = Some(draft);
                         self.refresh_painter();
@@ -399,6 +462,176 @@ impl App {
             |r| Message::Designer(DesignerMessage::Compiled(r)),
         )
     }
+    pub(in crate::ui) fn designer_layers_view<'a>(
+        &'a self,
+        draft: &'a Draft,
+    ) -> Element<'a, Message> {
+        let action = Message::Designer;
+        let enabled = !self.busy;
+        let selection = self.designer.selection;
+        let background = crate::layers::Layer::new("Background".into(), "background".into());
+        let image_layers = draft
+            .layers
+            .as_ref()
+            .map_or(std::slice::from_ref(&background), |stack| {
+                stack.layers.as_slice()
+            });
+        let mut layers = column![
+            row![
+                text("Front to back").size(11),
+                space().width(Fill),
+                icon_button(
+                    Icon::Create,
+                    "Add image layer",
+                    (enabled && image_layers.len() < 6).then_some(action(DesignerMessage::Layer(
+                        LayerMessage::Import(crate::layers::ImportTarget::Layer)
+                    ))),
+                    false
+                ),
+            ]
+            .align_y(iced::Center)
+        ]
+        .spacing(6);
+        for effect in DesignEffect::ALL {
+            layers = layers.push(
+                row![
+                    checkbox(effect.enabled(&draft.design))
+                        .on_toggle_maybe(enabled.then_some(move |value| action(
+                            DesignerMessage::Toggle(effect, value)
+                        ))),
+                    button(
+                        row![
+                            icons::glyph(Icon::Effects, 14),
+                            text(effect.to_string()).size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center)
+                    )
+                    .width(Fill)
+                    .style(if selection == DesignerSelection::Effect(effect) {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press_maybe(enabled.then_some(action(DesignerMessage::Select(
+                        DesignerSelection::Effect(effect)
+                    )))),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            );
+        }
+        layers = layers.push(
+            button(
+                row![
+                    icons::glyph(Icon::Adjust, 14),
+                    text("Color adjustments").size(14)
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+            .width(Fill)
+            .style(if selection == DesignerSelection::Color {
+                style::selected
+            } else {
+                style::quiet
+            })
+            .on_press_maybe(
+                enabled.then_some(action(DesignerMessage::Select(DesignerSelection::Color))),
+            ),
+        );
+        layers = layers.push(self.layer_rows_view(image_layers));
+        let mut panel = column![].spacing(14);
+        match selection {
+            DesignerSelection::Image => {
+                let index = self.designer.layer.min(image_layers.len() - 1);
+                panel = panel.push(self.layer_settings_view(
+                    &image_layers[index],
+                    index,
+                    image_layers.len(),
+                ));
+            }
+            DesignerSelection::Effect(effect) => {
+                panel = panel
+                    .push(text(effect.to_string()).size(16))
+                    .push(text("Applies to the whole scene").size(12));
+                if !effect.enabled(&draft.design) {
+                    panel = panel
+                        .push(text("Hidden · enable this layer to preview the effect.").size(12));
+                }
+                panel = panel.push(
+                    container(self.scene_controls_view(&draft.design, effect.controls()))
+                        .padding(12)
+                        .width(Fill)
+                        .style(style::panel),
+                );
+            }
+            DesignerSelection::Color => {
+                panel = panel
+                    .push(text("Color adjustments").size(16))
+                    .push(text("Applies to the whole scene").size(12))
+                    .push(
+                        container(
+                            self.scene_controls_view(&draft.design, &["brightness", "contrast"]),
+                        )
+                        .padding(12)
+                        .width(Fill)
+                        .style(style::panel),
+                    );
+            }
+        }
+        panel = panel.push(iced::widget::rule::horizontal(1)).push(
+            pick_list(
+                crate::designer::Preset::ALL.as_slice(),
+                None::<crate::designer::Preset>,
+                move |preset| action(DesignerMessage::Preset(preset)),
+            )
+            .placeholder("Scene preset…")
+            .width(Fill),
+        );
+        column![
+            scrollable(layers).height(300),
+            iced::widget::rule::horizontal(1),
+            scrollable(panel).height(Fill),
+        ]
+        .spacing(14)
+        .height(Fill)
+        .into()
+    }
+
+    fn scene_controls_view<'a>(
+        &self,
+        design: &'a crate::designer::Design,
+        controls: &[&str],
+    ) -> Element<'a, Message> {
+        let mut panel = column![].spacing(14);
+        for control in CONTROLS
+            .iter()
+            .filter(|control| controls.contains(&control.id))
+        {
+            panel = panel.push(
+                column![
+                    row![
+                        text(control.label).size(12),
+                        space().width(Fill),
+                        text(format!("{:.2}", design.values[control.id])).size(12)
+                    ],
+                    slider(
+                        control.min..=control.max,
+                        design.values[control.id],
+                        move |value| Message::Designer(DesignerMessage::Value(
+                            control.id.into(),
+                            value
+                        ))
+                    )
+                    .step((control.max - control.min) / 200.),
+                ]
+                .spacing(8),
+            );
+        }
+        panel.into()
+    }
+
     pub(super) fn designer_view(&self) -> Element<'_, Message> {
         use DesignerMessage::*;
         use DesignerPanel as PanelKind;
@@ -487,7 +720,6 @@ impl App {
                 }),
             space().width(Fill),
             tool(Icon::Layers, "Layers", PanelKind::Layers),
-            tool(Icon::Effects, "Effects", PanelKind::Effects),
             tool(Icon::Project, "Project", PanelKind::Project),
             self.playback_button(),
             icon_button(Icon::Focus, "Focus · F11", Some(Message::Focus), false),
@@ -499,76 +731,11 @@ impl App {
         if let Some(panel) = self.designer.panel {
             let title = match panel {
                 PanelKind::Layers => "Layers",
-                PanelKind::Effects => "Scene effects",
                 PanelKind::Project => "Project",
             };
             let mut controls = column![].spacing(14);
             match panel {
-                PanelKind::Layers => {
-                    if let Some(stack) = &draft.layers {
-                        controls = controls.push(self.layers_view(stack));
-                    } else {
-                        controls = controls
-                            .push(
-                                text("Build up your scene with images, motion and painted masks.")
-                                    .size(14),
-                            )
-                            .push(
-                                button("Add layers & effects")
-                                    .style(iced_button::primary)
-                                    .on_press_maybe(
-                                        (!self.busy).then_some(action(Layer(LayerMessage::Enable))),
-                                    ),
-                            );
-                    }
-                }
-                PanelKind::Effects => {
-                    controls = controls.push(
-                        pick_list(
-                            crate::designer::Preset::ALL.as_slice(),
-                            None::<crate::designer::Preset>,
-                            move |p| action(Preset(p)),
-                        )
-                        .placeholder("Start with a preset")
-                        .width(Fill),
-                    );
-                    for (index, label, value) in [
-                        (DesignEffect::Parallax, "Mouse parallax", d.parallax),
-                        (DesignEffect::Pulse, "Breathing light", d.pulse),
-                        (DesignEffect::Blur, "Soft blur", d.blur),
-                        (DesignEffect::Vignette, "Vignette", d.vignette),
-                    ] {
-                        controls = controls.push(
-                            checkbox(value)
-                                .label(label)
-                                .on_toggle(move |v| action(Toggle(index, v))),
-                        );
-                    }
-                    for c in CONTROLS {
-                        if (c.id == "parallax" && !d.parallax)
-                            || (["pulse", "speed"].contains(&c.id) && !d.pulse)
-                            || (c.id == "radius" && !d.blur)
-                            || (c.id == "vignette" && !d.vignette)
-                        {
-                            continue;
-                        }
-                        controls = controls.push(
-                            column![
-                                row![
-                                    text(c.label).size(12),
-                                    space().width(Fill),
-                                    text(format!("{:.2}", d.values[c.id])).size(12)
-                                ],
-                                slider(c.min..=c.max, d.values[c.id], move |v| action(Value(
-                                    c.id.into(),
-                                    v
-                                )))
-                                .step((c.max - c.min) / 200.),
-                            ]
-                            .spacing(8),
-                        );
-                    }
-                }
+                PanelKind::Layers => {}
                 PanelKind::Project => {
                     controls = controls
                         .push(text("Name").size(12))
@@ -643,6 +810,10 @@ impl App {
                         }));
                 }
             }
+            let controls: Element<'_, Message> = match panel {
+                PanelKind::Layers => self.designer_layers_view(draft),
+                PanelKind::Project => scrollable(controls).height(Fill).into(),
+            };
             let inspector = column![
                 row![
                     text(title).size(18),
@@ -655,7 +826,7 @@ impl App {
                     )
                 ]
                 .align_y(iced::Center),
-                scrollable(controls).height(Fill),
+                controls,
             ]
             .spacing(16);
             workspace = workspace.push(
@@ -673,6 +844,118 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn layered_app() -> (tempfile::TempDir, App) {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let mut draft = Draft::from_image(&source).unwrap();
+        draft.enable_layers().blank_mask(0, false).unwrap();
+        let (mut app, _) = App::new(
+            Library::open(Some(temporary.path().join("library"))).unwrap(),
+            Settings::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        app.designer.draft = Some(Arc::new(draft));
+        app.designer.brush = 0.06;
+        app.refresh_painter();
+        (temporary, app)
+    }
+
+    #[test]
+    fn scene_layers_expose_every_scene_control_once() {
+        let mut controls = vec!["brightness", "contrast"];
+        for effect in DesignEffect::ALL {
+            controls.extend_from_slice(effect.controls());
+        }
+        controls.sort_unstable();
+        let mut expected: Vec<_> = CONTROLS.iter().map(|control| control.id).collect();
+        expected.sort_unstable();
+        assert_eq!(controls, expected);
+    }
+
+    #[test]
+    fn selecting_scene_layers_preserves_painted_masks_and_returns_to_the_image() {
+        let (_temporary, mut app) = layered_app();
+        let _ = app.layer_update(LayerMessage::Paint([0.5, 0.5], [0.5, 0.5]));
+        assert!(app.designer.paint_dirty);
+        let _ = app.designer_update(DesignerMessage::Select(DesignerSelection::Effect(
+            DesignEffect::Blur,
+        )));
+        assert_eq!(
+            app.designer.selection,
+            DesignerSelection::Effect(DesignEffect::Blur)
+        );
+        assert!(!app.designer.paint_dirty);
+        let stack = app
+            .designer
+            .draft
+            .as_ref()
+            .unwrap()
+            .layers
+            .as_ref()
+            .unwrap();
+        let mask = stack.layers[0].mask.as_ref().unwrap();
+        let pixels = wisp_compiler::decode_source_image(&stack.assets[&mask.asset].bytes)
+            .unwrap()
+            .into_luma8();
+        assert_eq!(
+            pixels.get_pixel(pixels.width() / 2, pixels.height() / 2).0[0],
+            255
+        );
+
+        let _ = app.designer_update(DesignerMessage::Value("radius".into(), 3.));
+        let _ = app.layer_update(LayerMessage::Select(0));
+        assert_eq!(app.designer.selection, DesignerSelection::Image);
+        assert_eq!(app.designer.layer, 0);
+        assert_eq!(
+            app.designer.draft.as_ref().unwrap().design.values["radius"],
+            3.
+        );
+        assert_eq!(
+            app.designer
+                .paint_pixels
+                .as_ref()
+                .unwrap()
+                .get_pixel(512, 512)
+                .0[0],
+            255
+        );
+    }
+
+    #[test]
+    fn failed_mask_flush_and_busy_edits_keep_the_current_selection() {
+        let (_temporary, mut app) = layered_app();
+        app.busy = true;
+        let _ = app.designer_update(DesignerMessage::Select(DesignerSelection::Color));
+        assert_eq!(app.designer.selection, DesignerSelection::Image);
+        app.busy = false;
+        app.designer.paint_dirty = true;
+        app.designer.paint_asset = None;
+        let _ = app.designer_update(DesignerMessage::Select(DesignerSelection::Color));
+        assert_eq!(app.designer.selection, DesignerSelection::Image);
+        assert!(app.designer.paint_dirty);
+        assert!(app.status.contains("Could not preserve mask"));
+    }
+
+    #[test]
+    fn importing_an_image_selects_it_even_when_a_scene_effect_was_selected() {
+        let (temporary, mut app) = layered_app();
+        app.designer.selection = DesignerSelection::Effect(DesignEffect::Vignette);
+        let mut imported = app.designer.draft.as_ref().unwrap().as_ref().clone();
+        imported
+            .enable_layers()
+            .import(
+                &temporary.path().join("image.png"),
+                crate::layers::ImportTarget::Layer,
+            )
+            .unwrap();
+        let _ = app.layer_update(LayerMessage::Imported(Ok(Some(Arc::new(imported)))));
+        assert_eq!(app.designer.selection, DesignerSelection::Image);
+        assert_eq!(app.designer.layer, 1);
+    }
+
     #[test]
     fn failed_replacements_keep_preview_and_live_edits_update_export_defaults() {
         let temp = tempfile::tempdir().unwrap();
