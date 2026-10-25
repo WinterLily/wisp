@@ -309,7 +309,7 @@ impl Command {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CaptureOperation {
     LibraryScan,
     LibraryLoad,
@@ -343,23 +343,16 @@ impl App {
         operation: CaptureOperation,
         error: Option<String>,
     ) {
-        if error.is_some()
-            || self
-                .capture_operation_error
-                .as_ref()
-                .is_some_and(|(source, _)| *source == operation)
-        {
-            self.capture_operation_error = error.map(|error| (operation, error));
+        if let Some(error) = error {
+            self.capture_operation_errors.insert(operation, error);
+        } else {
+            self.capture_operation_errors.remove(&operation);
         }
     }
     pub(super) fn capture_error(&self) -> Option<String> {
         self.startup_error
             .clone()
-            .or_else(|| {
-                self.capture_operation_error
-                    .as_ref()
-                    .map(|(_, error)| error.clone())
-            })
+            .or_else(|| self.capture_operation_errors.values().next().cloned())
             .or_else(|| {
                 self.active_preview()
                     .and_then(|preview| preview.status.lock().unwrap().error.clone())
@@ -960,6 +953,60 @@ mod tests {
             assert!(final_path.is_file());
             assert!(app.exit_failure.lock().unwrap().is_none());
             assert!(app.audit_commands.is_empty());
+        }
+    }
+    #[test]
+    fn graph_recovery_preserves_scan_failures_until_a_matching_library_recovery() {
+        for partial_scan in [false, true] {
+            for recover_scan in [false, true] {
+                let (dir, mut app) = app();
+                let scan_error = "library scan still failed";
+                let scan_result = if partial_scan {
+                    Ok((vec![], vec![scan_error.into()]))
+                } else {
+                    Err(scan_error.into())
+                };
+                let _ = app.update(Message::Scanned(scan_result));
+                let _ = app.update(Message::Graph(GraphMessage::Opened(Err(
+                    "graph open failed".into(),
+                ))));
+
+                let document = Arc::new(crate::graph::Document::default());
+                let wallpaper = Arc::new(
+                    Wallpaper::from_package(&document.compile().unwrap().package).unwrap(),
+                );
+                let _ = app.update(Message::Graph(GraphMessage::Opened(Ok(Some(document)))));
+                let _ = app.update(Message::Graph(GraphMessage::Compiled(
+                    app.graph.revision,
+                    Ok((wallpaper, "ready".into())),
+                )));
+                assert_eq!(app.capture_error().as_deref(), Some(scan_error));
+
+                if recover_scan {
+                    let _ = app.update(Message::Scanned(Ok((vec![], vec![]))));
+                    assert!(app.capture_error().is_none());
+                }
+                let final_path = dir.path().join("terminal.png");
+                app.final_screenshot = Some(final_path.clone());
+                app.audit_commands.push_back(Command::Finish {});
+                let _ = app.audit_poll();
+                assert!(
+                    app.active_capture.as_ref().unwrap().completion
+                        == CaptureCompletion::AuditFinish
+                );
+                let screenshot =
+                    iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+                let _ = app.update(Message::Screenshot(screenshot));
+                assert!(final_path.is_file());
+                assert_eq!(
+                    app.exit_failure.lock().unwrap().as_deref(),
+                    (!recover_scan).then_some(scan_error)
+                );
+                if recover_scan {
+                    let _ = app.audit_poll();
+                    assert!(app.audit_commands.is_empty());
+                }
+            }
         }
     }
     #[test]
