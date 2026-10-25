@@ -335,7 +335,7 @@ impl App {
                 return Task::perform(
                     async {
                         let Some(file) = rfd::AsyncFileDialog::new()
-                            .set_title("Open graph project")
+                            .set_title("open graph project")
                             .pick_folder()
                             .await
                         else {
@@ -373,9 +373,9 @@ impl App {
                         async move {
                             let Some(file) = rfd::AsyncFileDialog::new()
                                 .set_title(if project {
-                                    "Save new graph project folder"
+                                    "save new graph project folder"
                                 } else {
-                                    "Export wallpaper"
+                                    "export wallpaper"
                                 })
                                 .set_file_name(if project {
                                     "graph-project"
@@ -432,7 +432,7 @@ impl App {
                     return Task::perform(
                         async move {
                             let Some(file) = rfd::AsyncFileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                                .add_filter("images", &["png", "jpg", "jpeg", "webp"])
                                 .pick_file()
                                 .await
                             else {
@@ -690,7 +690,7 @@ impl App {
                     ];
                     right = right.push(
                         pick_list(types, None::<&str>, move |v| action(ValueType(v.into())))
-                            .placeholder("Value type"),
+                            .placeholder("value type"),
                     );
                 }
                 for (key, value) in &self.graph.fields {
@@ -713,7 +713,7 @@ impl App {
                                 text_input(&key, value)
                                     .on_input(move |v| action(FieldEdit(key.clone(), v)))
                                     .on_submit(apply.clone()),
-                                button("Set").on_press_maybe(enabled.then_some(apply))
+                                button("set").on_press_maybe(enabled.then_some(apply))
                             ]
                             .spacing(4),
                         );
@@ -721,7 +721,7 @@ impl App {
                 }
                 if matches!(n.op, Op::Output { .. }) {
                     right = right.push(
-                        button("Use as output").on_press_maybe(enabled.then_some(action(Output))),
+                        button("use as output").on_press_maybe(enabled.then_some(action(Output))),
                     );
                 }
                 right = right.push(icon_button(
@@ -748,20 +748,20 @@ impl App {
                     text("Build a wallpaper, one node at a time.").size(15),
                     space().height(12),
                     row![
-                        button("New graph")
-                            .style(iced_button::primary)
+                        button("new graph")
+                            .style(style::primary)
                             .on_press_maybe(enabled.then_some(action(New))),
-                        button("Open project…").on_press_maybe(enabled.then_some(action(Browse))),
+                        button("open project…").on_press_maybe(enabled.then_some(action(Browse))),
                     ]
                     .spacing(12),
                     text_input("Project folder", &self.import_path)
                         .on_input(Message::ImportPath)
                         .width(420),
-                    button("Open path").on_press_maybe(
+                    button("open path").on_press_maybe(
                         (!self.busy && !self.import_path.trim().is_empty())
                             .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
                     ),
-                    button("Continue from Designer").on_press_maybe(
+                    button("continue from designer").on_press_maybe(
                         (enabled && self.designer.draft.is_some()).then_some(action(FromEasy))
                     ),
                 ]
@@ -831,12 +831,7 @@ impl App {
         let mut stage = column![canvas].spacing(8).height(Fill);
         if !self.graph.diagnostic.is_empty() {
             stage = stage.push(
-                scrollable(
-                    text(&self.graph.diagnostic)
-                        .size(12)
-                        .color(iced::Color::from_rgb(0.9, 0.5, 0.45)),
-                )
-                .height(64),
+                scrollable(text(&self.graph.diagnostic).size(12).style(style::error)).height(64),
             );
         }
         stage = stage.push(
@@ -848,14 +843,14 @@ impl App {
                     false
                 ),
                 icon_button(Icon::Focus, "Fit graph to view", Some(action(Fit)), false),
-                text(format!("{:.0}%", self.graph.zoom * 100.)).size(11),
+                text(format!("{:.0}%", self.graph.zoom * 100.)).size(12),
                 space().width(Fill),
                 text(if self.graph.wire.is_some() {
                     "Choose an input · Right-click to cancel"
                 } else {
                     "Drag to pan · Scroll to zoom"
                 })
-                .size(11),
+                .size(12),
             ]
             .spacing(8)
             .align_y(iced::Center),
@@ -885,7 +880,7 @@ impl App {
                     }
                     for kind in matches {
                         content = content.push(
-                            button(*kind)
+                            button(text(*kind))
                                 .width(Fill)
                                 .on_press_maybe(enabled.then(|| action(Add((*kind).into())))),
                         );
@@ -897,7 +892,7 @@ impl App {
                         content = content
                             .push(p.view(220.))
                             .push(self.playback_button())
-                            .push(text(&self.graph.report).size(11));
+                            .push(text(&self.graph.report).size(12));
                     } else {
                         content = content.push(text("Preparing preview…").size(13));
                     }
@@ -920,34 +915,34 @@ impl App {
                             } else {
                                 "Project saved"
                             })
-                            .size(11),
+                            .size(12),
                         )
                         .push(
-                            button("Save project…")
-                                .style(iced_button::primary)
+                            button("save project…")
+                                .style(style::primary)
                                 .width(Fill)
                                 .on_press_maybe(enabled.then_some(action(Save(true)))),
                         )
-                        .push(button("Export wallpaper…").width(Fill).on_press_maybe(
+                        .push(button("export wallpaper…").width(Fill).on_press_maybe(
                             (enabled && self.graph.valid).then_some(action(Save(false))),
                         ))
-                        .push(button("Save to library").width(Fill).on_press_maybe(
+                        .push(button("save to library").width(Fill).on_press_maybe(
                             (enabled && self.graph.valid).then_some(action(Install)),
                         ))
                         .push(
-                            button("Add image asset…")
+                            button("add image asset…")
                                 .width(Fill)
                                 .on_press_maybe(enabled.then_some(action(Asset))),
                         )
-                        .push(iced::widget::rule::horizontal(1))
+                        .push(iced::widget::rule::horizontal(1).style(style::divider))
                         .push(
                             row![
-                                button("New").on_press_maybe(enabled.then_some(action(New))),
-                                button("Open…").on_press_maybe(enabled.then_some(action(Browse)))
+                                button("new").on_press_maybe(enabled.then_some(action(New))),
+                                button("open…").on_press_maybe(enabled.then_some(action(Browse)))
                             ]
                             .spacing(8),
                         )
-                        .push(button("From Designer").on_press_maybe(
+                        .push(button("from designer").on_press_maybe(
                             (enabled && self.designer.draft.is_some()).then_some(action(FromEasy)),
                         ))
                         .push(
@@ -955,7 +950,7 @@ impl App {
                                 .on_input(Message::ImportPath),
                         )
                         .push(
-                            button("Open path").on_press_maybe(
+                            button("open path").on_press_maybe(
                                 (enabled && !self.import_path.trim().is_empty())
                                     .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
                             ),

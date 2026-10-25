@@ -25,8 +25,8 @@ use iced::{
     Length::Fill,
     Subscription, Task,
     widget::{
-        button as iced_button, checkbox, column, container, image, pick_list, row,
-        scrollable as iced_scrollable, slider, space, text, text_input,
+        button as iced_button, column, container, image, row, scrollable as iced_scrollable, space,
+        text as iced_text,
     },
 };
 use icons::{Icon, icon_button};
@@ -41,18 +41,92 @@ use wisp_host::{Assignment, Config, MonitorInfo};
 use wisp_runtime::{Globals, Wallpaper};
 
 fn button<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Button<'a, Message> {
-    iced_button(content).padding([9, 12]).style(style::quiet)
+    iced_button(content)
+        .padding([8, 12])
+        .style(style::secondary)
+}
+
+fn text<'a>(content: impl AsRef<str>) -> iced::widget::Text<'a> {
+    iced_text(content.as_ref().to_lowercase()).font(style::FONT)
+}
+
+fn text_input<'a>(placeholder: &str, value: &str) -> iced::widget::TextInput<'a, Message> {
+    iced::widget::text_input(&placeholder.to_lowercase(), value)
+        .font(style::FONT)
+        .padding([8, 10])
+        .style(style::input)
+}
+
+fn checkbox<'a>(checked: bool) -> iced::widget::Checkbox<'a, Message> {
+    iced::widget::checkbox(checked)
+        .size(15)
+        .spacing(9)
+        .style(style::check)
+}
+
+fn slider<'a, T>(
+    range: std::ops::RangeInclusive<T>,
+    value: T,
+    on_change: impl Fn(T) -> Message + 'a,
+) -> iced::widget::Slider<'a, T, Message>
+where
+    T: Copy + From<u8> + PartialOrd,
+{
+    iced::widget::slider(range, value, on_change).style(style::range)
+}
+
+// Keep the original option intact so display casing cannot alter a device ID or graph value.
+#[derive(Clone, PartialEq)]
+struct LowercaseOption<T>(T);
+impl<T: ToString> std::fmt::Display for LowercaseOption<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.to_string().to_lowercase())
+    }
+}
+
+fn pick_list<'a, T, L, V>(
+    options: L,
+    selected: Option<V>,
+    on_selected: impl Fn(T) -> Message + 'a,
+) -> iced::widget::PickList<
+    'a,
+    LowercaseOption<T>,
+    Vec<LowercaseOption<T>>,
+    LowercaseOption<T>,
+    Message,
+>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]>,
+    V: std::borrow::Borrow<T>,
+{
+    iced::widget::pick_list(
+        options
+            .borrow()
+            .iter()
+            .cloned()
+            .map(LowercaseOption)
+            .collect::<Vec<_>>(),
+        selected.map(|value| LowercaseOption(value.borrow().clone())),
+        move |value| on_selected(value.0),
+    )
+    .font(style::FONT)
+    .padding([8, 10])
+    .style(style::choice)
+    .menu_style(style::menu)
 }
 
 fn scrollable<'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {
-    iced_scrollable(content).direction(iced_scrollable::Direction::Vertical(
-        iced_scrollable::Scrollbar::new()
-            .width(3)
-            .scroller_width(3)
-            .spacing(10),
-    ))
+    iced_scrollable(content)
+        .style(style::scroll)
+        .direction(iced_scrollable::Direction::Vertical(
+            iced_scrollable::Scrollbar::new()
+                .width(3)
+                .scroller_width(3)
+                .spacing(10),
+        ))
 }
 
 pub struct LaunchOptions {
@@ -126,9 +200,11 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         App::update,
         App::view,
     )
-    .title("Wisp")
+    .title("wisp")
     .settings(iced::Settings {
-        default_text_size: 14.into(),
+        default_text_size: 15.into(),
+        default_font: style::FONT,
+        fonts: vec![style::FONT_BYTES.into()],
         ..Default::default()
     })
     .theme(|app: &App| style::theme(app.settings.dark_theme))
@@ -560,15 +636,15 @@ impl App {
                 return Task::perform(
                     async move {
                         let dialog = rfd::AsyncFileDialog::new().set_title(if project {
-                            "Import Wisp project"
+                            "import wisp project"
                         } else {
-                            "Import wallpaper"
+                            "import wallpaper"
                         });
                         let chosen = if project {
                             dialog.pick_folder().await
                         } else {
                             dialog
-                                .add_filter("Wisp wallpaper", &["wisp"])
+                                .add_filter("wisp wallpaper", &["wisp"])
                                 .pick_file()
                                 .await
                         };
@@ -621,8 +697,8 @@ impl App {
                 return Task::perform(
                     async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("Export wallpaper")
-                            .add_filter("Wisp wallpaper", &["wisp"])
+                            .set_title("export wallpaper")
+                            .add_filter("wisp wallpaper", &["wisp"])
                             .set_file_name("wallpaper.wisp")
                             .save_file()
                             .await
@@ -999,7 +1075,18 @@ impl App {
     }
     fn view(&self) -> Element<'_, Message> {
         let nav = |icon, label, page| {
-            icon_button(icon, label, Some(Message::Page(page)), self.page == page)
+            iced_button(
+                row![icons::glyph(icon, 15), text(label).size(14)]
+                    .spacing(8)
+                    .align_y(iced::Center),
+            )
+            .padding([8, 12])
+            .style(if self.page == page {
+                style::selected
+            } else {
+                style::quiet
+            })
+            .on_press(Message::Page(page))
         };
         let navigation = row![
             text("wisp").size(22),
@@ -1013,7 +1100,7 @@ impl App {
         ]
         .spacing(4)
         .align_y(iced::Center)
-        .padding([8, 16]);
+        .padding([12, 20]);
         let content = match self.page {
             Page::Library => self.library_view(),
             Page::Designer => self.designer_view(),
@@ -1024,7 +1111,9 @@ impl App {
         let editing = matches!(self.page, Page::Designer | Page::Graph);
         let mut layout = column![].spacing(0);
         if !self.focus_mode || !editing {
-            layout = layout.push(navigation);
+            layout = layout
+                .push(navigation)
+                .push(iced::widget::rule::horizontal(1).style(style::divider));
         }
         layout = layout.push(
             container(content)
@@ -1040,8 +1129,8 @@ impl App {
                     } else {
                         &self.status
                     })
-                    .size(11)
-                    .style(|theme| text::Style {
+                    .size(12)
+                    .style(|theme| iced_text::Style {
                         color: Some(style::muted(theme)),
                     }),
                 )
@@ -1086,7 +1175,7 @@ impl App {
                 for parameter in &item.parameters {
                     let id = parameter.id.clone();
                     let value = preview.parameters.get(&id).unwrap_or(&parameter.default);
-                    let label = id.replace('_', " ");
+                    let label = id.replace('_', " ").to_lowercase();
                     if let ParameterValue::Boolean(value) = value {
                         detail = detail.push(
                             checkbox(*value)
@@ -1145,11 +1234,7 @@ impl App {
                         detail = detail.push(control);
                     }
                     if let Some(error) = self.parameter_errors.get(&parameter.id) {
-                        detail = detail.push(
-                            text(error)
-                                .size(12)
-                                .color(iced::Color::from_rgb(1.0, 0.4, 0.4)),
-                        );
+                        detail = detail.push(text(error).size(12).style(style::error));
                     }
                 }
             }
@@ -1167,10 +1252,10 @@ impl App {
                     text("Create a living wallpaper or bring one into your library.").size(15),
                     space().height(12),
                     row![
-                        button("Create wallpaper")
-                            .style(iced_button::primary)
+                        button("create wallpaper")
+                            .style(style::primary)
                             .on_press(Message::Page(Page::Designer)),
-                        button("Import…").on_press(Message::Page(Page::Import)),
+                        button("import…").on_press(Message::Page(Page::Import)),
                     ]
                     .spacing(12),
                 ]
@@ -1210,9 +1295,11 @@ impl App {
                 );
             }
             card = card.push(text(&item.manifest.name).size(15)).push(
-                text(&item.manifest.author).size(11).style(|t| text::Style {
-                    color: Some(style::muted(t)),
-                }),
+                text(&item.manifest.author)
+                    .size(12)
+                    .style(|t| iced_text::Style {
+                        color: Some(style::muted(t)),
+                    }),
             );
             cards = cards.push(
                 button(card)
@@ -1278,7 +1365,7 @@ impl App {
                                 Message::Monitor
                             )
                             .width(Fill),
-                            button("Refresh displays").on_press_maybe(
+                            button("refresh displays").on_press_maybe(
                                 (!self.discovering).then_some(Message::RefreshMonitors)
                             ),
                             text("Frame limit").size(12),
@@ -1287,9 +1374,9 @@ impl App {
                                 Some(self.assignment_fps),
                                 Message::DesktopFps
                             ),
-                            text("Frames per second").size(11),
+                            text("Frames per second").size(12),
                             text(self.assignment_label()).size(12),
-                            button("Clear assignment")
+                            button("clear assignment")
                                 .on_press_maybe((!self.busy).then_some(Message::Clear)),
                         ]
                         .spacing(14);
@@ -1301,15 +1388,15 @@ impl App {
                     LibraryPanel::Details => column![
                         text(&item.manifest.description).size(14),
                         text(format!("By {}", item.manifest.author)).size(12),
-                        text(item.manifest.tags.join(" · ")).size(11),
+                        text(item.manifest.tags.join(" · ")).size(12),
                         text(format!(
                             "{} · {} passes · {:.1} MiB",
                             item.record.source,
                             item.passes,
                             item.resource_bytes as f64 / 1048576.
                         ))
-                        .size(11),
-                        button("Export wallpaper…")
+                        .size(12),
+                        button("export wallpaper…")
                             .on_press_maybe((!self.busy).then_some(Message::Export)),
                     ]
                     .spacing(14)
@@ -1344,8 +1431,8 @@ impl App {
                     text(format!("For {}", self.monitor.label))
                         .size(12)
                         .width(Fill),
-                    button("Apply wallpaper")
-                        .style(iced_button::primary)
+                    button("apply wallpaper")
+                        .style(style::primary)
                         .on_press_maybe(
                             (!self.busy
                                 && self.parameter_errors.is_empty()
@@ -1397,18 +1484,18 @@ impl App {
                     "Import a portable .wisp wallpaper or compile a Wisp project into your library."
                 ),
                 row![
-                    button("Choose .wisp file")
+                    button("choose .wisp file")
                         .on_press_maybe((!self.busy).then_some(Message::Browse(false))),
-                    button("Choose project folder")
+                    button("choose project folder")
                         .on_press_maybe((!self.busy).then_some(Message::Browse(true)))
                 ]
                 .spacing(12),
-                button("Create from image").on_press(Message::Page(Page::Designer)),
+                button("create from image").on_press(Message::Page(Page::Designer)),
                 text("Or enter a file or project folder path"),
                 text_input("/path/to/wallpaper.wisp", &self.import_path)
                     .on_input(Message::ImportPath)
                     .on_submit(Message::Import),
-                button("Import to library").on_press_maybe(
+                button("import to library").on_press_maybe(
                     (!self.busy && !self.import_path.trim().is_empty()).then_some(Message::Import)
                 ),
                 text(
@@ -1438,12 +1525,12 @@ impl App {
             text("Settings").size(30),
             text("Audio response").size(22),
             checkbox(self.config.audio.enabled)
-                .label("Enable audio capture for wallpapers and preview")
+                .label("enable audio capture for wallpapers and preview")
                 .on_toggle(Message::AudioEnabled),
             text("Captures system output by default. An explicit input device can capture a microphone.").size(13),
             row![
                 pick_list(self.audio_devices.clone(), Some(selected), Message::AudioDevice),
-                button("Refresh devices").on_press(Message::RefreshAudio)
+                button("refresh devices").on_press(Message::RefreshAudio)
             ].spacing(12),
             row![
                 text("Sensitivity"),
@@ -1463,11 +1550,11 @@ impl App {
                 pick_list(&[15,24,30,60][..], Some(self.settings.preview_fps), Message::PreviewFps)
             ].spacing(12),
             text("Live preview pauses when this window loses focus or you leave a preview page.").size(13),
-            checkbox(self.settings.dark_theme).label("Dark appearance").on_toggle(Message::Dark),
-            button("Save settings").on_press(Message::SaveSettings),
+            checkbox(self.settings.dark_theme).label("dark appearance").on_toggle(Message::Dark),
+            button("save settings").on_press(Message::SaveSettings),
             text("Desktop wallpapers").size(22),
             text(if self.daemon_running {"The wallpaper daemon is running independently."} else {"The wallpaper daemon is stopped."}),
-            button("Start wallpaper daemon").on_press_maybe((!self.busy).then_some(Message::Start)),
+            button("start wallpaper daemon").on_press_maybe((!self.busy).then_some(Message::Start)),
             text("Closing Wisp keeps your desktop wallpapers running. Use Clear in the Library to remove assignments."),
             text(format!("Library: {}", self.library.root.display())).size(13),
         ].spacing(18).max_width(850);
@@ -1507,6 +1594,23 @@ fn is_image(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lowercase_choices_preserve_case_sensitive_values_and_identity() {
+        let first = LowercaseOption(MonitorChoice {
+            id: Some("DP-MixedCase".into()),
+            label: "Studio Display".into(),
+        });
+        let second = LowercaseOption(MonitorChoice {
+            id: Some("dp-mixedcase".into()),
+            label: "studio display".into(),
+        });
+        assert_eq!(first.to_string(), "studio display");
+        assert_eq!(first.to_string(), second.to_string());
+        assert!(first != second);
+        assert_eq!(first.0.id.as_deref(), Some("DP-MixedCase"));
+        assert_eq!(first.0.label, "Studio Display");
+    }
+
     #[test]
     fn escape_restores_focused_painting_before_closing_the_editor() {
         let temporary = tempfile::tempdir().unwrap();

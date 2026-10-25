@@ -213,8 +213,8 @@ impl App {
                     return Task::perform(
                         async move {
                             let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_title("Choose layer, mask or displacement image")
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                                .set_title("choose layer, mask or displacement image")
+                                .add_filter("images", &["png", "jpg", "jpeg", "webp"])
                                 .pick_file()
                                 .await
                             else {
@@ -539,13 +539,15 @@ impl App {
             ))
             .center_x(Fill)
         };
-        panel = panel.push(iced::widget::rule::horizontal(1)).push(
-            row![
-                tab_button(Icon::Adjust, "Adjust", LayerTab::Adjust),
-                tab_button(Icon::Mask, "Mask", LayerTab::Mask)
-            ]
-            .spacing(4),
-        );
+        panel = panel
+            .push(iced::widget::rule::horizontal(1).style(style::divider))
+            .push(
+                row![
+                    tab_button(Icon::Adjust, "Adjust", LayerTab::Adjust),
+                    tab_button(Icon::Mask, "Mask", LayerTab::Mask)
+                ]
+                .spacing(4),
+            );
         if tab == LayerTab::Adjust {
             panel = panel
                 .push(text_input("Layer name", &layer.name).on_input(move |v| action(Name(v))))
@@ -574,50 +576,50 @@ impl App {
             if let Some(m) = &layer.mask {
                 panel = panel
                     .push(
-                        button("Paint mask…")
-                            .style(iced_button::primary)
+                        button("paint mask…")
+                            .style(style::primary)
                             .width(Fill)
                             .on_press(action(Expand(true))),
                     )
                     .push(
                         checkbox(m.invert)
-                            .label("Invert")
+                            .label("invert")
                             .on_toggle(move |v| action(MaskFlag(MaskOption::Invert, v))),
                     )
                     .push(
                         checkbox(m.composition)
-                            .label("Affect layer opacity")
+                            .label("affect layer opacity")
                             .on_toggle(move |v| action(MaskFlag(MaskOption::Composition, v))),
                     )
                     .push(
                         checkbox(m.effect)
-                            .label("Affect motion strength")
+                            .label("affect motion strength")
                             .on_toggle(move |v| action(MaskFlag(MaskOption::Effect, v))),
                     )
                     .push(
-                        button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true)))),
+                        button("fill white").on_press_maybe(enabled.then_some(action(Mask(true)))),
                     )
                     .push(
-                        button("Clear to black")
+                        button("clear to black")
                             .on_press_maybe(enabled.then_some(action(Mask(false)))),
                     )
                     .push(
-                        button("Remove mask").on_press_maybe(enabled.then_some(action(ClearMask))),
+                        button("remove mask").on_press_maybe(enabled.then_some(action(ClearMask))),
                     );
             } else {
                 panel = panel.push(
-                    button("Create a mask")
-                        .style(iced_button::primary)
+                    button("create a mask")
+                        .style(style::primary)
                         .width(Fill)
                         .on_press_maybe(enabled.then_some(action(Mask(false)))),
                 );
             }
             panel =
                 panel
-                    .push(button("Import mask…").on_press_maybe(
+                    .push(button("import mask…").on_press_maybe(
                         enabled.then_some(action(Import(ImportTarget::Mask(index)))),
                     ))
-                    .push(text("White reveals · Black anchors").size(11));
+                    .push(text("White reveals · Black anchors").size(12));
         }
         let mut motion = column![
             row![
@@ -643,16 +645,18 @@ impl App {
             }
         }
         if layer.effect == crate::layers::Effect::Displacement {
-            motion = motion.push(button("Choose displacement map…").on_press_maybe(
+            motion = motion.push(button("choose displacement map…").on_press_maybe(
                 enabled.then_some(action(Import(ImportTarget::Displacement(index)))),
             ));
         }
-        panel = panel.push(iced::widget::rule::horizontal(1)).push(
-            container(motion)
-                .padding(12)
-                .width(Fill)
-                .style(style::panel),
-        );
+        panel = panel
+            .push(iced::widget::rule::horizontal(1).style(style::divider))
+            .push(
+                container(motion)
+                    .padding(12)
+                    .width(Fill)
+                    .style(style::panel),
+            );
         panel.into()
     }
     fn layer_control_view<'a>(
@@ -731,21 +735,21 @@ impl App {
                 )
                 .push(
                     checkbox(self.designer.magic_wand.all_matching)
-                        .label("All matching colors")
+                        .label("all matching colors")
                         .on_toggle(move |value| action(WandAllMatching(value))),
                 );
         }
         let mut controls = column![tools].spacing(8).padding([0, 8]);
         if self.designer.paint_tool == PaintTool::PolygonalLasso {
             controls = controls
-                .push(text("Click corners; click the first point or Enter to fill. Backspace undoes; Esc cancels.").size(11))
+                .push(text("Click corners; click the first point or Enter to fill. Backspace undoes; Esc cancels.").size(12))
                 .push(row![
-                    button("Fill polygon").on_press_maybe((self.designer.lasso_vertices.len() >= 3).then_some(action(LassoFinish))),
-                    button("Cancel polygon").on_press_maybe((!self.designer.lasso_vertices.is_empty()).then_some(action(LassoCancel)))
+                    button("fill polygon").on_press_maybe((self.designer.lasso_vertices.len() >= 3).then_some(action(LassoFinish))),
+                    button("cancel polygon").on_press_maybe((!self.designer.lasso_vertices.is_empty()).then_some(action(LassoCancel)))
                 ].spacing(8));
         }
         if self.designer.paint_tool == PaintTool::MagicWand {
-            controls = controls.push(text("Click the source to select a connected color region. Increase tolerance to include similar colors; use Erase to subtract.").size(11));
+            controls = controls.push(text("Click the source to select a connected color region. Increase tolerance to include similar colors; use Erase to subtract.").size(12));
         }
         controls.into()
     }
@@ -810,7 +814,7 @@ impl App {
             .padding([4, 8]),
             self.paint_controls(),
             canvas,
-            text("Teal shows the selected area · Live preview updates as you paint").size(11),
+            text("Teal shows the selected area · Live preview updates as you paint").size(12),
         ]
         .spacing(8)
         .height(Fill)
