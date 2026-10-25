@@ -767,7 +767,7 @@ impl App {
         if let Some(p) = &self.graph.preview {
             center = center.push(
                 row![
-                    iced::widget::Shader::new(p.clone()).width(Fill).height(180),
+                    p.view(180.0),
                     column![
                         button(if self.preview_paused { "Play" } else { "Pause" })
                             .on_press(Message::PausePreview),
