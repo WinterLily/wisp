@@ -35,6 +35,7 @@ icons! {
     Info => "info",
     Layers => "layers",
     Effects => "sparkles",
+    Attached => "corner-down-right",
     Project => "folder",
     Play => "play",
     Pause => "pause",
@@ -44,7 +45,6 @@ icons! {
     Forward => "arrow-up",
     Backward => "arrow-down",
     Remove => "trash-2",
-    Motion => "move",
     Mask => "scan",
     HardRound => "brush",
     Airbrush => "spray-can",
@@ -248,10 +248,9 @@ mod tests {
 
     #[test]
     #[ignore = "requires a working graphics adapter"]
-    fn unified_layer_rows_select_images_and_effects_and_toggle_effect_visibility() {
-        use crate::designer::Draft;
-        use crate::ui::designer_ui::{DesignEffect, DesignerMessage, DesignerSelection};
-
+    fn attached_rows_select_their_effects_and_paint_buttons_open_the_selected_mask() {
+        use crate::ui::designer_ui::{DesignerMessage, DesignerSelection, layer_ui::LayerMessage};
+        use crate::{designer::Draft, layers::Effect};
         let renderer = renderer();
         let temporary = tempfile::tempdir().unwrap();
         let source = temporary.path().join("image.png");
@@ -262,19 +261,35 @@ mod tests {
             None,
             None,
         );
+        let mut draft = Draft::from_image(&source).unwrap();
+        for effect in [Effect::Hair, Effect::Clothing] {
+            draft.enable_layers().add_effect(0, effect).unwrap();
+        }
         app.busy = false;
-        app.designer.draft = Some(std::sync::Arc::new(Draft::from_image(&source).unwrap()));
-
-        for (point, selection) in [
-            (
-                Point::new(120., 60.),
-                DesignerSelection::Effect(DesignEffect::Vignette),
-            ),
-            (Point::new(120., 225.), DesignerSelection::Color),
-            (Point::new(120., 270.), DesignerSelection::Image),
-        ] {
+        app.designer.draft = Some(std::sync::Arc::new(draft));
+        let row_centers = {
+            let draft = app.designer.draft.as_ref().unwrap();
+            let mut element = app.layer_rows_view(&draft.layers.as_ref().unwrap().layers);
+            let mut tree = Tree::new(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(900., 620.)),
+            );
+            Layout::new(&node)
+                .children()
+                .map(|layout| Point::new(120., layout.bounds().center_y()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(row_centers.len(), 3);
+        for (point, selection) in row_centers.iter().copied().zip([
+            DesignerSelection::LayerEffect(1),
+            DesignerSelection::LayerEffect(0),
+            DesignerSelection::Image,
+        ]) {
+            let draft = app.designer.draft.as_ref().unwrap();
             let messages = click(
-                app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+                app.layer_rows_view(&draft.layers.as_ref().unwrap().layers),
                 &renderer,
                 point,
             );
@@ -283,29 +298,98 @@ mod tests {
                 let _ = app.update(message);
             }
             assert_eq!(app.designer.selection, selection);
-            assert!(app.designer.draft.as_ref().unwrap().layers.is_none());
         }
+        let draft = app.designer.draft.as_ref().unwrap();
         let messages = click(
-            app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+            app.layer_rows_view(&draft.layers.as_ref().unwrap().layers),
             &renderer,
-            Point::new(10., 60.),
+            Point::new(48., row_centers[0].y),
         );
         assert!(matches!(
             messages.as_slice(),
-            [Message::Designer(DesignerMessage::Toggle(
-                DesignEffect::Vignette,
-                false
+            [Message::Designer(DesignerMessage::Layer(
+                LayerMessage::EffectVisible(0, 1, false)
             ))]
         ));
+        let _ = app.update(Message::Designer(DesignerMessage::Layer(
+            LayerMessage::SelectEffect(0, 1),
+        )));
+        let paint_button = {
+            let layer = &app
+                .designer
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .as_ref()
+                .unwrap()
+                .layers[0];
+            let mut element = app.effect_settings_view(layer, &layer.effects[1], 0, 1);
+            let mut tree = Tree::new(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(900., 620.)),
+            );
+            Layout::new(&node)
+                .children()
+                .nth(3)
+                .unwrap()
+                .children()
+                .nth(1)
+                .unwrap()
+                .bounds()
+                .center()
+        };
+        let layer = &app
+            .designer
+            .draft
+            .as_ref()
+            .unwrap()
+            .layers
+            .as_ref()
+            .unwrap()
+            .layers[0];
+        let messages = click(
+            app.effect_settings_view(layer, &layer.effects[1], 0, 1),
+            &renderer,
+            paint_button,
+        );
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::Designer(DesignerMessage::Layer(
+                LayerMessage::Expand(true)
+            ))]
+        ));
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert!(app.designer.paint_expanded);
+        assert_eq!(
+            app.designer.paint_asset.as_deref(),
+            Some(
+                app.designer
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .layers
+                    .as_ref()
+                    .unwrap()
+                    .layers[0]
+                    .effects[1]
+                    .mask
+                    .as_ref()
+                    .unwrap()
+                    .asset
+                    .as_str()
+            )
+        );
         app.busy = true;
-        for point in [
-            Point::new(120., 60.),
-            Point::new(10., 60.),
-            Point::new(120., 270.),
-        ] {
+        for point in row_centers {
+            let draft = app.designer.draft.as_ref().unwrap();
             assert!(
                 click(
-                    app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+                    app.layer_rows_view(&draft.layers.as_ref().unwrap().layers),
                     &renderer,
                     point
                 )

@@ -472,7 +472,8 @@ impl Draft {
                 "project metadata differs from designer settings"
             );
             // Verify the old generated graph before upgrading its layer composition semantics.
-            draft.layers.as_mut().unwrap().version = 2;
+            let stack = draft.layers.as_mut().unwrap();
+            stack.version = stack.version.max(2);
             draft.compile()?;
             return Ok(draft);
         }

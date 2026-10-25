@@ -180,22 +180,45 @@ fn dispatch(
 #[ignore = "requires a working graphics adapter"]
 fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
     let renderer = renderer();
-    for (selection, expected_sliders) in [
-        (DesignerSelection::Color, 2),
-        (DesignerSelection::Effect(DesignEffect::Parallax), 1),
-        (DesignerSelection::Effect(DesignEffect::Pulse), 2),
-        (DesignerSelection::Effect(DesignEffect::Blur), 1),
-        (DesignerSelection::Effect(DesignEffect::Vignette), 1),
-        (DesignerSelection::Image, 4),
+    for (selection, tab, expected_sliders) in [
+        (DesignerSelection::Color, LayerTab::Adjust, 7),
+        (
+            DesignerSelection::Effect(DesignEffect::Parallax),
+            LayerTab::Adjust,
+            1,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Pulse),
+            LayerTab::Adjust,
+            2,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Blur),
+            LayerTab::Adjust,
+            1,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Vignette),
+            LayerTab::Adjust,
+            1,
+        ),
+        (DesignerSelection::Image, LayerTab::Adjust, 8),
+        (DesignerSelection::Image, LayerTab::Mask, 1),
+        (DesignerSelection::LayerEffect(0), LayerTab::Adjust, 5),
     ] {
         let (_temporary, mut app) = designer();
         app.designer.selection = selection;
-        let layers = selection == DesignerSelection::Image;
+        app.designer.layer_tab = tab;
+        let layers = matches!(
+            selection,
+            DesignerSelection::Image | DesignerSelection::LayerEffect(_)
+        );
         if layers {
             let stack = Arc::make_mut(app.designer.draft.as_mut().unwrap()).enable_layers();
-            stack.layers[0].preset(crate::layers::Effect::Hair);
-            app.designer.panel = Some(DesignerPanel::Layers);
-            app.designer.layer_tab = LayerTab::Mask;
+            stack.add_effect(0, crate::layers::Effect::Hair).unwrap();
+            if tab == LayerTab::Mask {
+                stack.blank_mask(0, false).unwrap();
+            }
         }
         app.busy = true;
         app.designer.compiling = true;
@@ -208,7 +231,11 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
         );
         let mut bounds = Vec::new();
         slider_bounds(Layout::new(&node), &mut bounds);
-        assert_eq!(bounds.len(), expected_sliders);
+        assert_eq!(
+            bounds.len(),
+            expected_sliders,
+            "unexpected sliders for {selection:?}"
+        );
         drop(element);
         for bounds in bounds {
             for (event, fraction) in [
@@ -229,7 +256,14 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
                         assert_eq!(draft.design.values[id], *value);
                     }
                     Message::Designer(DesignerMessage::Layer(LayerMessage::Value(id, value))) => {
-                        assert_eq!(draft.layers.as_ref().unwrap().layers[0].value(*id), *value);
+                        let layer = &draft.layers.as_ref().unwrap().layers[0];
+                        let actual = match selection {
+                            DesignerSelection::LayerEffect(index) => {
+                                layer.effects[index].value(*id)
+                            }
+                            _ => layer.value(*id),
+                        };
+                        assert_eq!(actual, *value);
                     }
                     _ => panic!("slider emitted an unexpected message"),
                 }
