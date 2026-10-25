@@ -1344,7 +1344,7 @@ mod live_paint_tests {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("regions.png");
         ::image::RgbaImage::from_fn(100, 50, |x, _| {
-            ::image::Rgba([if x < 30 || x >= 70 { 180 } else { 20 }, 40, 60, 255])
+            ::image::Rgba([if !(30..70).contains(&x) { 180 } else { 20 }, 40, 60, 255])
         })
         .save(&source)
         .unwrap();
