@@ -778,7 +778,8 @@ impl App {
             iced::widget::stack![
                 canvas,
                 container(
-                    container(iced::widget::Shader::new(p.clone()).width(240).height(135))
+                    container(p.view(135.))
+                        .width(240)
                         .padding(6)
                         .style(style::panel)
                 )
@@ -852,7 +853,7 @@ impl App {
                 PanelKind::Preview => {
                     if let Some(p) = &self.graph.preview {
                         content = content
-                            .push(iced::widget::Shader::new(p.clone()).width(Fill).height(220))
+                            .push(p.view(220.))
                             .push(
                                 button(if self.preview_paused { "Play" } else { "Pause" })
                                     .on_press(Message::PausePreview),

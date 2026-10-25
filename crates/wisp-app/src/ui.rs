@@ -1151,7 +1151,7 @@ impl App {
                 .spacing(4)
                 .align_y(iced::Center),
             );
-            let stage = container(crate::preview::fitted(preview.clone(), (16, 9)))
+            let stage = container(preview.canvas())
                 .padding(16)
                 .width(Fill)
                 .height(Fill)

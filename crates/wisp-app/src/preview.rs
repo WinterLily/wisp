@@ -1,7 +1,8 @@
 //! Iced only composites a texture; wallpaper rendering uses the desktop runtime.
 use iced::{
-    Rectangle, mouse,
+    ContentFit, Element, Length, Rectangle, Size, mouse,
     widget::shader::{self, Viewport},
+    widget::{Shader, container, responsive},
 };
 use std::{
     collections::BTreeMap,
@@ -23,26 +24,45 @@ pub struct Preview {
     pub globals: Globals,
     pub status: Arc<Mutex<Status>>,
 }
+impl Preview {
+    /// Use the source aspect ratio so opening a panel never stretches the image.
+    pub fn canvas<Message: 'static>(&self) -> Element<'static, Message> {
+        let dimensions = self
+            .wallpaper
+            .images()
+            .first()
+            .map(|image| image.dimensions())
+            .unwrap_or((16, 9));
+        fitted(self.clone(), dimensions)
+    }
 
-/// Fit the authoring canvas to its source without stretching it as panels open.
+    pub fn view<Message: 'static>(&self, max_height: f32) -> Element<'static, Message> {
+        container(self.canvas())
+            .width(Length::Fill)
+            .height(max_height)
+            .into()
+    }
+}
+
+/// Keep authoring dimensions explicit because layer assets can have different sizes.
 pub(crate) fn fitted<'a, Message: 'a>(
     preview: Preview,
     dimensions: (u32, u32),
-) -> iced::Element<'a, Message> {
-    iced::widget::responsive(move |size| {
-        let aspect = dimensions.0.max(1) as f32 / dimensions.1.max(1) as f32;
-        let width = size.width.min(size.height * aspect).max(1.);
-        let height = width / aspect;
-        iced::widget::container(
-            iced::widget::Shader::new(preview.clone())
-                .width(width)
-                .height(height),
+) -> Element<'a, Message> {
+    let source = Size::new(dimensions.0.max(1) as f32, dimensions.1.max(1) as f32);
+    responsive(move |available| {
+        let size = ContentFit::Contain.fit(source, available);
+        container(
+            Shader::new(preview.clone())
+                .width(size.width)
+                .height(size.height),
         )
-        .center(iced::Length::Fill)
+        .center(Length::Fill)
         .into()
     })
     .into()
 }
+
 pub struct Primitive {
     preview: Preview,
     mouse: [f32; 2],
