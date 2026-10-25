@@ -3,8 +3,7 @@ use crate::{Assignment, Config};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -50,14 +49,7 @@ impl DaemonStatus {
         }
     }
     pub fn read(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        fs::File::open(path)?
-            .take(2 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 2 * 1024 * 1024,
-            "daemon status exceeds 2 MiB"
-        );
+        let bytes = wisp_io::read_bounded(path, 2 * 1024 * 1024)?;
         let status: Self = serde_json::from_slice(&bytes).context("invalid daemon status")?;
         ensure!(
             status.schema_version == 1,
@@ -66,17 +58,16 @@ impl DaemonStatus {
         Ok(status)
     }
     pub fn write(&self, path: &Path) -> Result<()> {
-        let temporary = path.with_extension(format!("{}.tmp", self.pid));
-        let result = (|| {
-            let mut file = fs::File::create(&temporary)?;
-            file.write_all(&serde_json::to_vec(self)?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, path).context("could not publish daemon status")
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.as_file().sync_all()?;
+        file.persist(path)
+            .context("could not publish daemon status")?;
+        Ok(())
     }
 }
 
@@ -142,6 +133,34 @@ impl Drop for StatusReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_publication_replaces_complete_snapshots_and_cleans_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("status.json");
+        let mut status = DaemonStatus::starting(&Config::default());
+        status.write(&path).unwrap();
+        assert!(!DaemonStatus::read(&path).unwrap().ready);
+        status.ready = true;
+        status.write(&path).unwrap();
+        assert!(DaemonStatus::read(&path).unwrap().ready);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        status.schema_version = 2;
+        status.write(&path).unwrap();
+        assert!(
+            DaemonStatus::read(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("version")
+        );
+        assert!(status.write(directory.path()).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        {
+            let _reporter = StatusReporter::new(Some(path.clone()), &Config::default()).unwrap();
+        }
+        let stopped = DaemonStatus::read(&path).unwrap();
+        assert!(!stopped.running);
+        assert!(!stopped.ready);
+    }
     #[test]
     fn rejection_retains_accepted_generation_and_configuration_until_recovery() {
         let config = Config::default();

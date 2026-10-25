@@ -852,12 +852,10 @@ impl App {
                     return iced::exit();
                 }
             }
-            Message::Poll => {
-                if !self.daemon_polling {
-                    self.daemon_polling = true;
-                    let library = self.library.clone();
-                    return work(move || daemon::running(&library), Message::DaemonStatus);
-                }
+            Message::Poll if !self.daemon_polling => {
+                self.daemon_polling = true;
+                let library = self.library.clone();
+                return work(move || daemon::running(&library), Message::DaemonStatus);
             }
             Message::DaemonStatus(result) => {
                 self.daemon_polling = false;

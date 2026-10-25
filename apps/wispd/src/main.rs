@@ -124,18 +124,23 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    if let Some(path) = &args.status_file {
-        wisp_host::status::DaemonStatus::starting(&config).write(path)?;
-    }
-    run(Options {
+    let result = run(Options {
         config,
         config_path: args.config,
         list_outputs: args.list_outputs,
         json: args.json,
         frames: args.frames,
         status_path: args.status_file,
-        stop_path: args.stop_file,
-    })
+        stop_path: args.stop_file.clone(),
+    });
+    if let Some(path) = args.stop_file {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    result
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

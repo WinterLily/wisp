@@ -210,12 +210,12 @@ impl App {
                 }
             }
             Select(index) => {
-                if !self
+                if self
                     .designer
                     .draft
                     .as_ref()
                     .and_then(|draft| draft.layers.as_ref())
-                    .is_some_and(|stack| index < stack.layers.len())
+                    .is_none_or(|stack| index >= stack.layers.len())
                 {
                     self.status = "Could not select missing layer".into();
                     return Task::none();
@@ -1033,6 +1033,38 @@ fn import_image(
 #[cfg(test)]
 mod import_tests {
     use super::*;
+    #[test]
+    fn invalid_layer_selection_preserves_a_valid_target_for_subsequent_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let mut draft = Draft::from_image(&source).unwrap();
+        draft.enable_layers();
+        let (mut app, _) = App::new(
+            Library::open(Some(dir.path().join("library"))).unwrap(),
+            Settings::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        app.designer.draft = Some(Arc::new(draft));
+        let _ = app.layer_update(LayerMessage::Select(usize::MAX));
+        assert_eq!(app.designer.layer, 0);
+        assert!(app.status.contains("missing layer"));
+        let _ = app.layer_update(LayerMessage::Value(ControlId::PositionX, 0.2));
+        assert_eq!(
+            app.designer
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .as_ref()
+                .unwrap()
+                .layers[0]
+                .position[0],
+            0.2
+        );
+    }
     #[test]
     fn path_imports_use_named_targets_and_preserve_the_source_on_failure() {
         let dir = tempfile::tempdir().unwrap();

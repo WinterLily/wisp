@@ -169,11 +169,22 @@ mod tests {
     }
     #[test]
     fn explorer_loss_releases_surfaces_and_recovery_discovers_a_new_desktop() {
+        let mut config = assignments("accepted.wisp");
+        let mut outputs = original_outputs(&config);
         assert_eq!(desktop_action(Some(true), true), DesktopAction::Retain);
         assert_eq!(desktop_action(Some(false), true), DesktopAction::Release);
+        outputs.clear();
         assert_eq!(desktop_action(Some(true), false), DesktopAction::Release);
         assert_eq!(desktop_action(None, true), DesktopAction::Discover);
         assert_eq!(desktop_action(None, false), DesktopAction::Discover);
+        assert!(outputs.is_empty());
+        let recovered = config.clone();
+        assert_eq!(
+            apply(&mut outputs, &mut config, recovered, false).unwrap(),
+            2
+        );
+        assert_eq!(config.outputs, assignments("accepted.wisp").outputs);
+        assert!(outputs.iter().all(|output| output.renderer_identity >= 100));
         assert_eq!(desktop_action(Some(true), true), DesktopAction::Retain);
     }
 }

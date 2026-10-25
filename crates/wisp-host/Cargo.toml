@@ -10,5 +10,6 @@ wisp-audio.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 wisp-format.workspace = true
 wisp-runtime.workspace = true

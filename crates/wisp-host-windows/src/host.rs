@@ -43,6 +43,7 @@ struct Host {
 }
 
 pub fn run(options: Options) -> Result<()> {
+    let mut reporter = StatusReporter::new(options.status_path.clone(), &options.config)?;
     let _dpi = native::DpiContext::physical()?;
     let monitors = native::monitors()?;
     if options.list_outputs {
@@ -81,7 +82,6 @@ pub fn run(options: Options) -> Result<()> {
         return Ok(());
     }
     options.config.validate()?;
-    let mut reporter = StatusReporter::new(options.status_path.clone(), &options.config)?;
     let audio = wisp_audio::Service::new(options.config.audio.clone());
     let mut audio_config = options.config.audio.clone();
     let _class = native::WindowClass::register()?;

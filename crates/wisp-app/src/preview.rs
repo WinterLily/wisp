@@ -222,7 +222,7 @@ impl shader::Primitive for Primitive {
         pipeline.needs_frame = advancing;
         if pipeline.attempted != Some(preview.generation) {
             pipeline.attempted = Some(preview.generation);
-            // Preparation only occurs on selection; invalid replacements retain the prior renderer.
+            // Keeping the last valid renderer leaves a usable preview when replacement allocation fails.
             match pollster::block_on(Renderer::from_device(
                 device,
                 queue,

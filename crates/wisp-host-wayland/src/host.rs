@@ -68,6 +68,7 @@ struct Host {
 }
 
 pub fn run(options: Options) -> Result<()> {
+    let mut reporter = StatusReporter::new(options.status_path.clone(), &options.config)?;
     let connection = Connection::connect_to_env().context("could not connect to Wayland")?;
     let (globals, mut queue) = registry_queue_init(&connection)?;
     let qh = queue.handle();
@@ -127,7 +128,6 @@ pub fn run(options: Options) -> Result<()> {
     if let Some(error) = host.error.take() {
         return Err(error);
     }
-    let mut reporter = StatusReporter::new(host.options.status_path.clone(), &host.options.config)?;
     let audio = wisp_audio::Service::new(host.options.config.audio.clone());
     let mut audio_config = host.options.config.audio.clone();
     let stop = Arc::new(AtomicBool::new(false));
