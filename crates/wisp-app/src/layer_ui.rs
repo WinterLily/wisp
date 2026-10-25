@@ -183,7 +183,11 @@ impl App {
                 | LassoCancel
                 | LassoUndo
         );
-        if self.busy && !matches!(message, Imported(_)) && !(painting && self.designer.compiling) {
+        let slider = matches!(message, Value(..) | Commit);
+        if self.busy
+            && !matches!(message, Imported(_))
+            && !((painting || slider) && self.designer.compiling)
+        {
             return Task::none();
         }
         if !painting
