@@ -362,6 +362,9 @@ impl shader::Primitive for Primitive {
             if pipeline.rendered_generation == Some(self.preview.generation)
                 && status.error.is_none()
             {
+                if status.rendered_generation != pipeline.rendered_generation {
+                    status.frames = 0;
+                }
                 status.frames += 1;
                 status.rendered_generation = pipeline.rendered_generation;
             }

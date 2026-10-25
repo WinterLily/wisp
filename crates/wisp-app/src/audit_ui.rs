@@ -1,0 +1,662 @@
+use super::*;
+use designer_ui::{
+    DesignEffect,
+    layer_ui::{LayerMessage, MaskOption},
+};
+use graph_ui::GraphMessage;
+use serde::Deserialize;
+use std::{collections::VecDeque, path::Path};
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum Command {
+    Page {
+        value: String,
+    },
+    Wait {
+        milliseconds: u64,
+    },
+    Screenshot {
+        path: PathBuf,
+    },
+    Assert {
+        state: serde_json::Value,
+    },
+    Finish {},
+    PausePreview {},
+    Focus {},
+    Dismiss {},
+    DesignerOpen {
+        path: PathBuf,
+    },
+    DesignerName {
+        value: String,
+    },
+    DesignerAuthor {
+        value: String,
+    },
+    DesignerEffect {
+        effect: String,
+        enabled: bool,
+    },
+    DesignerValue {
+        id: String,
+        value: f32,
+    },
+    DesignerPanel {
+        value: String,
+    },
+    DesignerSave {
+        path: PathBuf,
+    },
+    DesignerExport {
+        path: PathBuf,
+    },
+    LayerEnable {},
+    LayerSelect {
+        index: usize,
+    },
+    LayerImport {
+        path: PathBuf,
+        kind: String,
+        #[serde(default)]
+        index: usize,
+    },
+    LayerValue {
+        id: String,
+        value: f32,
+    },
+    LayerMask {
+        white: bool,
+    },
+    LayerMaskFlag {
+        flag: String,
+        value: bool,
+    },
+    LayerPaint {
+        from: [f32; 2],
+        to: [f32; 2],
+    },
+    LayerStrokeEnd {},
+    LayerExpand {
+        value: bool,
+    },
+    GraphNew {},
+    GraphPanel {
+        value: String,
+    },
+    GraphOpen {
+        path: PathBuf,
+    },
+    GraphSave {
+        path: PathBuf,
+    },
+    GraphExport {
+        path: PathBuf,
+    },
+    GraphImage {
+        path: PathBuf,
+    },
+    GraphSelect {
+        id: String,
+    },
+    GraphAdd {
+        id: String,
+    },
+    GraphField {
+        id: String,
+        value: String,
+    },
+    GraphFieldEdit {
+        id: String,
+        value: String,
+    },
+    GraphWire {
+        id: String,
+    },
+    GraphSocket {
+        id: String,
+        input: String,
+    },
+    GraphDisconnect {
+        id: String,
+        input: String,
+    },
+    GraphMove {
+        id: String,
+        position: [f32; 2],
+    },
+    GraphDelete {},
+    GraphOutput {},
+    GraphArrange {},
+    LibraryParameter {
+        id: String,
+        value: String,
+    },
+    LibraryFloat {
+        id: String,
+        value: f32,
+    },
+    LibraryBoolean {
+        id: String,
+        value: bool,
+    },
+    LibraryReset {},
+}
+
+const MAX_AUDIT_BYTES: u64 = 1024 * 1024;
+const MAX_AUDIT_COMMANDS: usize = 1024;
+
+pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
+    let Some(path) = path else {
+        return Ok(VecDeque::new());
+    };
+    let commands: VecDeque<Command> =
+        serde_json::from_slice(&wisp_io::read_bounded(path, MAX_AUDIT_BYTES)?)
+            .context("invalid audit command file")?;
+    ensure!(
+        !commands.is_empty() && commands.len() <= MAX_AUDIT_COMMANDS,
+        "audit requires 1–1024 commands"
+    );
+    let mut total_wait = 0u64;
+    for command in &commands {
+        match command {
+            Command::Wait { milliseconds } => {
+                ensure!(
+                    *milliseconds <= 30_000,
+                    "audit waits cannot exceed 30000 milliseconds"
+                );
+                total_wait += milliseconds;
+                ensure!(
+                    total_wait <= 90_000,
+                    "total audit waits cannot exceed 90000 milliseconds"
+                );
+            }
+            Command::DesignerValue { value, .. }
+            | Command::LayerValue { value, .. }
+            | Command::LibraryFloat { value, .. } => {
+                ensure!(value.is_finite(), "audit numeric values must be finite");
+            }
+            Command::GraphMove { position, .. } | Command::LayerPaint { from: position, .. } => {
+                ensure!(
+                    position.iter().all(|value| value.is_finite()),
+                    "audit coordinates must be finite"
+                );
+                if let Command::LayerPaint { to, .. } = command {
+                    ensure!(
+                        to.iter().all(|value| value.is_finite()),
+                        "audit coordinates must be finite"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        matches!(commands.back(), Some(Command::Finish {})),
+        "audit sequence must end with finish"
+    );
+    Ok(commands)
+}
+
+impl Command {
+    fn message(self) -> Result<Message> {
+        use Command::*;
+        let designer = |message| Message::Designer(message);
+        let layer = |message| designer(DesignerMessage::Layer(message));
+        let graph = |message| Message::Graph(message);
+        Ok(match self {
+            Page { value } => Message::Page(match value.as_str() {
+                "library" => super::Page::Library,
+                "designer" => super::Page::Designer,
+                "graph" => super::Page::Graph,
+                "import" => super::Page::Import,
+                "settings" => super::Page::Settings,
+                _ => anyhow::bail!("unknown page: {value}"),
+            }),
+            PausePreview {} => Message::PausePreview {},
+            Focus {} => Message::Focus {},
+            Dismiss {} => Message::Dismiss {},
+            DesignerOpen { path } => designer(DesignerMessage::Open(path)),
+            DesignerName { value } => designer(DesignerMessage::Name(value)),
+            DesignerAuthor { value } => designer(DesignerMessage::Author(value)),
+            DesignerEffect { effect, enabled } => designer(DesignerMessage::Toggle(
+                match effect.as_str() {
+                    "parallax" => DesignEffect::Parallax,
+                    "pulse" => DesignEffect::Pulse,
+                    "blur" => DesignEffect::Blur,
+                    "vignette" => DesignEffect::Vignette,
+                    _ => anyhow::bail!("unknown designer effect: {effect}"),
+                },
+                enabled,
+            )),
+            DesignerValue { id, value } => designer(DesignerMessage::Value(id, value)),
+            DesignerPanel { value } => designer(DesignerMessage::Panel(match value.as_str() {
+                "layers" => designer_ui::DesignerPanel::Layers,
+                "effects" => designer_ui::DesignerPanel::Effects,
+                "project" => designer_ui::DesignerPanel::Project,
+                _ => anyhow::bail!("unknown designer panel: {value}"),
+            })),
+            DesignerSave { path } => designer(DesignerMessage::SaveTo(true, path)),
+            DesignerExport { path } => designer(DesignerMessage::SaveTo(false, path)),
+            LayerEnable {} => layer(LayerMessage::Enable),
+            LayerSelect { index } => layer(LayerMessage::Select(index)),
+            LayerImport { path, kind, index } => layer(LayerMessage::ImportPath(
+                match kind.as_str() {
+                    "layer" => crate::layers::ImportTarget::Layer,
+                    "mask" => crate::layers::ImportTarget::Mask(index),
+                    "displacement" => crate::layers::ImportTarget::Displacement(index),
+                    _ => anyhow::bail!("unknown layer import kind: {kind}"),
+                },
+                path,
+            )),
+            LayerValue { id, value } => layer(LayerMessage::Value(id.as_str().try_into()?, value)),
+            LayerMask { white } => layer(LayerMessage::Mask(white)),
+            LayerMaskFlag { flag, value } => layer(LayerMessage::MaskFlag(
+                match flag.as_str() {
+                    "invert" => MaskOption::Invert,
+                    "composition" => MaskOption::Composition,
+                    "effect" => MaskOption::Effect,
+                    _ => anyhow::bail!("unknown mask flag: {flag}"),
+                },
+                value,
+            )),
+            LayerPaint { from, to } => layer(LayerMessage::Paint(from, to)),
+            LayerStrokeEnd {} => layer(LayerMessage::StrokeEnd),
+            LayerExpand { value } => layer(LayerMessage::Expand(value)),
+            GraphNew {} => graph(GraphMessage::New),
+            GraphPanel { value } => graph(GraphMessage::Panel(match value.as_str() {
+                "nodes" => graph_ui::GraphPanel::Nodes,
+                "properties" => graph_ui::GraphPanel::Properties,
+                "preview" => graph_ui::GraphPanel::Preview,
+                "project" => graph_ui::GraphPanel::Project,
+                _ => anyhow::bail!("unknown graph panel: {value}"),
+            })),
+            GraphOpen { path } => graph(GraphMessage::Open(path)),
+            GraphSave { path } => graph(GraphMessage::SaveTo(true, path)),
+            GraphExport { path } => graph(GraphMessage::SaveTo(false, path)),
+            GraphImage { path } => graph(GraphMessage::AssetPath(path)),
+            GraphSelect { id } => graph(GraphMessage::Select(id)),
+            GraphAdd { id } => graph(GraphMessage::Add(id)),
+            GraphField { id, value } => graph(GraphMessage::Field(id, value)),
+            GraphFieldEdit { id, value } => graph(GraphMessage::FieldEdit(id, value)),
+            GraphWire { id } => graph(GraphMessage::Wire(id)),
+            GraphSocket { id, input } => graph(GraphMessage::Socket(id, input)),
+            GraphDisconnect { id, input } => graph(GraphMessage::Disconnect(id, input)),
+            GraphMove { id, position } => graph(GraphMessage::Move(id, position)),
+            GraphDelete {} => graph(GraphMessage::Delete),
+            GraphOutput {} => graph(GraphMessage::Output),
+            GraphArrange {} => graph(GraphMessage::Arrange),
+            LibraryParameter { id, value } => Message::Parameter(id, value),
+            LibraryFloat { id, value } => Message::Float(id, value),
+            LibraryBoolean { id, value } => Message::Boolean(id, value),
+            LibraryReset {} => Message::Reset,
+            _ => anyhow::bail!("audit flow command cannot be dispatched as an edit"),
+        })
+    }
+}
+
+impl App {
+    fn active_preview(&self) -> Option<&Preview> {
+        match self.page {
+            Page::Designer => self.designer.preview.as_ref(),
+            Page::Graph => self.graph.preview.as_ref(),
+            _ => self.preview.as_ref(),
+        }
+    }
+    fn capture(&mut self, exit: bool) -> Task<Message> {
+        self.capturing = true;
+        self.capture_started = Instant::now();
+        self.capture_exit = exit;
+        iced::window::latest()
+            .and_then(iced::window::screenshot)
+            .map(Message::Screenshot)
+    }
+    fn fail_audit(&mut self, error: impl Into<String>) -> Task<Message> {
+        let error = error.into();
+        eprintln!("AUDIT_FAILED: {error}");
+        *self.exit_failure.lock().unwrap() = Some(error);
+        if self.screenshot.is_some() && !self.capturing {
+            self.capture(true)
+        } else {
+            iced::exit()
+        }
+    }
+    fn smoke_ready(&self, frames: u64) -> bool {
+        self.active_preview().is_some_and(|preview| {
+            let status = preview.status.lock().unwrap();
+            status.error.is_none()
+                && status.rendered_generation == Some(preview.generation)
+                && status.frames >= frames
+        })
+    }
+    fn state(&self) -> serde_json::Value {
+        let preview = self
+            .active_preview()
+            .map(|preview| (preview.generation, preview.status.lock().unwrap()));
+        serde_json::json!({
+            "page": match self.page { Page::Library => "library", Page::Designer => "designer", Page::Graph => "graph", Page::Import => "import", Page::Settings => "settings" },
+            "busy": self.busy, "paused": self.preview_paused, "focus": self.focus_mode,
+            "designer_dirty": self.designer.dirty, "designer_valid": self.designer.valid,
+            "graph_dirty": self.graph.dirty, "graph_valid": self.graph.valid,
+            "parameter_errors": self.parameter_errors.len(), "status": self.status,
+            "graph_diagnostic": self.graph.diagnostic,
+            "preview_error": preview.as_ref().is_some_and(|(_, status)| status.error.is_some()),
+            "preview_ready": preview.as_ref().is_some_and(|(generation, status)| status.rendered_generation == Some(*generation) && status.error.is_none()),
+            "designer_name": self.designer.draft.as_ref().map(|draft| &draft.design.name),
+            "graph_nodes": self.graph.document.as_ref().map(|doc| doc.graph.nodes.len()),
+            "paint_dirty": self.designer.paint_dirty,
+        })
+    }
+    fn assert_state(&self, expected: &serde_json::Value) -> Result<()> {
+        let state = self.state();
+        for (key, value) in expected
+            .as_object()
+            .context("assert state must be an object")?
+        {
+            if key == "status_contains" {
+                ensure!(
+                    self.status
+                        .contains(value.as_str().context("status_contains must be text")?),
+                    "status assertion failed: {}",
+                    self.status
+                );
+            } else {
+                ensure!(
+                    state.get(key).is_some() && state.get(key) == Some(value),
+                    "state assertion {key}: expected {value}, got {}",
+                    state.get(key).unwrap_or(&serde_json::Value::Null)
+                );
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn audit_poll(&mut self) -> Task<Message> {
+        if self.capturing {
+            if self.capture_started.elapsed() > Duration::from_secs(10) {
+                return self.fail_audit("application screenshot timed out");
+            }
+            return Task::none();
+        }
+        let timed_out = self.started.elapsed() > Duration::from_secs(45);
+        let gpu_error = self
+            .active_preview()
+            .and_then(|preview| preview.status.lock().unwrap().error.clone());
+        if self.frame_limit.is_some() {
+            if let Some(error) = self.startup_error.clone().or(gpu_error.clone()) {
+                return self.fail_audit(error);
+            }
+            if self
+                .frame_limit
+                .is_some_and(|frames| self.smoke_ready(frames))
+                && self.audit_commands.is_empty()
+            {
+                println!("Rendered {} live preview frames", self.frame_limit.unwrap());
+                self.frame_limit = None;
+                return if self.screenshot.is_some() {
+                    self.capture(true)
+                } else {
+                    iced::exit()
+                };
+            }
+            if timed_out {
+                return self.fail_audit(format!("Wisp smoke test timed out: {}", self.status));
+            }
+        }
+        if !self.audit_commands.is_empty() {
+            if self.started.elapsed() > Duration::from_secs(120) {
+                return self.fail_audit(format!("audit commands timed out: {}", self.status));
+            }
+            if self.busy
+                || self
+                    .audit_wait_until
+                    .is_some_and(|until| Instant::now() < until)
+            {
+                return Task::none();
+            }
+            let command = self.audit_commands.pop_front().unwrap();
+            println!("AUDIT_STATE {}", self.state());
+            match command {
+                Command::Wait { milliseconds } => {
+                    self.audit_wait_until =
+                        Some(Instant::now() + Duration::from_millis(milliseconds))
+                }
+                Command::Screenshot { path } => {
+                    self.screenshot = Some(path);
+                    return self.capture(false);
+                }
+                Command::Assert { state } => {
+                    if let Err(error) = self.assert_state(&state) {
+                        return self.fail_audit(format!("{error:#}"));
+                    }
+                }
+                Command::Finish {} => {
+                    println!("AUDIT_COMPLETE {}", self.state());
+                    return iced::exit();
+                }
+                command => match command.message() {
+                    Ok(message) => return self.update(message),
+                    Err(error) => return self.fail_audit(format!("{error:#}")),
+                },
+            }
+            return Task::none();
+        }
+        if self.frame_limit.is_none()
+            && self.screenshot.is_some()
+            && self.started.elapsed() >= self.screenshot_delay
+            && (!self.busy || timed_out)
+        {
+            if let Some(error) = self.startup_error.clone().or(gpu_error) {
+                *self.exit_failure.lock().unwrap() = Some(error);
+            }
+            if timed_out && self.busy {
+                *self.exit_failure.lock().unwrap() =
+                    Some(format!("startup timed out: {}", self.status));
+            }
+            return self.capture(true);
+        }
+        Task::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn app() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = App::new(
+            Library::open(Some(dir.path().join("library"))).unwrap(),
+            Settings::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        (dir, app)
+    }
+    #[test]
+    fn scripts_reject_unbounded_files_excess_commands_and_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commands.json");
+        for invalid in ["[]".to_owned(), r#"[{"command":"wait","milliseconds":30001},{"command":"finish"}]"#.to_owned(),
+            r#"[{"command":"wait","milliseconds":30000},{"command":"wait","milliseconds":30000},{"command":"wait","milliseconds":30000},{"command":"wait","milliseconds":1},{"command":"finish"}]"#.to_owned(),
+            r#"[{"command":"wait","milliseconds":0}]"#.to_owned(),
+            format!("[{}]", vec![r#"{"command":"finish"}"#; MAX_AUDIT_COMMANDS+1].join(",")),
+            " ".repeat(MAX_AUDIT_BYTES as usize + 1)] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(load(Some(&path)).is_err());
+        }
+        assert!(load(Some(dir.path())).is_err());
+        std::fs::write(
+            &path,
+            r#"[{"command":"wait","milliseconds":0},{"command":"finish"}]"#,
+        )
+        .unwrap();
+        assert_eq!(load(Some(&path)).unwrap().len(), 2);
+        assert!(load(None).unwrap().is_empty());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn audit_fifo_is_rejected_without_opening_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commands.fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(load(Some(&path)).is_err());
+    }
+    #[test]
+    fn empty_and_paused_screenshots_do_not_require_wallpaper_ticks() {
+        let (_dir, mut app) = app();
+        app.screenshot = Some("empty.png".into());
+        app.screenshot_delay = Duration::ZERO;
+        app.preview_paused = true;
+        let _ = app.audit_poll();
+        assert!(app.capturing);
+        assert!(app.exit_failure.lock().unwrap().is_none());
+    }
+    #[test]
+    fn failed_startup_captures_the_error_screen_and_retains_failure_verdict() {
+        let (_dir, mut app) = app();
+        let _ = app.update(Message::Designer(DesignerMessage::Opened(Err(
+            "missing source".into(),
+        ))));
+        app.screenshot = Some("error.png".into());
+        app.screenshot_delay = Duration::ZERO;
+        let _ = app.audit_poll();
+        assert!(app.capturing);
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("missing source")
+        );
+    }
+    #[test]
+    fn smoke_requires_the_requested_generation_without_replacement_errors() {
+        let (_dir, mut app) = app();
+        let doc = crate::graph::Document::default();
+        let wallpaper = Arc::new(Wallpaper::from_package(&doc.compile().unwrap().package).unwrap());
+        app.preview = Some(Preview {
+            generation: 7,
+            wallpaper,
+            parameters: Default::default(),
+            globals: Globals::new(1, 1),
+            status: Default::default(),
+        });
+        let status = app.preview.as_ref().unwrap().status.clone();
+        status.lock().unwrap().frames = 10;
+        assert!(!app.smoke_ready(3));
+        status.lock().unwrap().rendered_generation = Some(6);
+        assert!(!app.smoke_ready(3));
+        status.lock().unwrap().rendered_generation = Some(7);
+        assert!(app.smoke_ready(3));
+        status.lock().unwrap().error = Some("replacement rejected".into());
+        assert!(!app.smoke_ready(3));
+        app.frame_limit = Some(3);
+        let _ = app.audit_poll();
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("replacement rejected")
+        );
+    }
+    #[test]
+    fn audit_queue_uses_real_updates_waits_for_busy_work_and_rejects_bad_assertions() {
+        let (_dir, mut app) = app();
+        app.audit_commands = serde_json::from_str(
+            r#"[
+            {"command":"page","value":"settings"},
+            {"command":"pause_preview"},
+            {"command":"assert","state":{"page":"settings","paused":true}},
+            {"command":"assert","state":{"unknown":false}}
+        ]"#,
+        )
+        .unwrap();
+        app.busy = true;
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 4);
+        app.busy = false;
+        for _ in 0..4 {
+            let _ = app.audit_poll();
+        }
+        assert!(app.preview_paused);
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("unknown")
+        );
+    }
+    #[test]
+    fn unavailable_screenshots_and_unfinished_smoke_runs_fail_with_bounded_timeouts() {
+        let (_dir, mut app) = app();
+        app.capturing = true;
+        app.capture_started = Instant::now() - Duration::from_secs(11);
+        let _ = app.audit_poll();
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("screenshot timed out")
+        );
+        app.capturing = false;
+        *app.exit_failure.lock().unwrap() = None;
+        app.frame_limit = Some(1);
+        app.started = Instant::now() - Duration::from_secs(46);
+        let _ = app.audit_poll();
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("smoke test timed out")
+        );
+    }
+    #[test]
+    fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {
+        assert!(
+            serde_json::from_str::<Command>(r#"{"command":"pause_preview","typo":1}"#).is_err()
+        );
+        assert!(
+            Command::LayerValue {
+                id: "typo".into(),
+                value: 1.
+            }
+            .message()
+            .is_err()
+        );
+        assert!(
+            Command::DesignerEffect {
+                effect: "typo".into(),
+                enabled: true
+            }
+            .message()
+            .is_err()
+        );
+        let (_dir, mut app) = app();
+        app.audit_commands = serde_json::from_str(
+            r#"[{"command":"screenshot","path":"frame.png"},{"command":"pause_preview"}]"#,
+        )
+        .unwrap();
+        let _ = app.audit_poll();
+        assert!(app.capturing);
+        assert!(!app.capture_exit);
+        let _ = app.audit_poll();
+        assert!(!app.preview_paused);
+        assert_eq!(app.audit_commands.len(), 1);
+    }
+}

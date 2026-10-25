@@ -1,5 +1,5 @@
 #[path = "layer_ui.rs"]
-mod layer_ui;
+pub(super) mod layer_ui;
 use super::*;
 use crate::designer::{CONTROLS, Draft, Preset};
 use iced::widget::column;
@@ -12,6 +12,14 @@ pub(super) enum DesignerPanel {
     Project,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum DesignEffect {
+    Parallax,
+    Pulse,
+    Blur,
+    Vignette,
+}
+
 #[derive(Clone)]
 pub(super) enum DesignerMessage {
     Panel(DesignerPanel),
@@ -22,10 +30,11 @@ pub(super) enum DesignerMessage {
     Name(String),
     Author(String),
     Preset(Preset),
-    Toggle(usize, bool),
+    Toggle(DesignEffect, bool),
     Value(String, f32),
     Compiled(Outcome<(Arc<Wallpaper>, String)>),
     Save(bool),
+    SaveTo(bool, PathBuf),
     Saved(Outcome<bool>),
     Install,
     PaintTick(Instant),
@@ -163,11 +172,10 @@ impl App {
                 if let Some(d) = &mut self.designer.draft {
                     let d = &mut Arc::make_mut(d).design;
                     match index {
-                        0 => d.parallax = enabled,
-                        1 => d.pulse = enabled,
-                        2 => d.blur = enabled,
-                        3 => d.vignette = enabled,
-                        _ => return Task::none(),
+                        DesignEffect::Parallax => d.parallax = enabled,
+                        DesignEffect::Pulse => d.pulse = enabled,
+                        DesignEffect::Blur => d.blur = enabled,
+                        DesignEffect::Vignette => d.vignette = enabled,
                     }
                     self.designer.dirty = true;
                     return self.compile_design();
@@ -223,6 +231,25 @@ impl App {
                     }
                 }
             }
+            SaveTo(project, path) if !self.busy => {
+                if let Err(error) = self.flush_paint() {
+                    self.status = format!("Could not save mask: {error:#}");
+                    return Task::none();
+                }
+                if let Some(draft) = self.designer.draft.clone() {
+                    self.busy = true;
+                    return work(
+                        move || save_to(&draft, &path, project),
+                        move |result| {
+                            if project {
+                                Message::Designer(Saved(result))
+                            } else {
+                                Message::Exported(result)
+                            }
+                        },
+                    );
+                }
+            }
             Save(project) if !self.busy => {
                 if let Err(e) = self.flush_paint() {
                     self.status = format!("Could not save mask: {e:#}");
@@ -253,17 +280,10 @@ impl App {
                                 return Ok(false);
                             };
                             let path = file.path().to_owned();
-                            tokio::task::spawn_blocking(move || {
-                                if project {
-                                    draft.save_project(&path)
-                                } else {
-                                    draft.export(&path)
-                                }
-                            })
-                            .await
-                            .map_err(|e| e.to_string())?
-                            .map(|_| true)
-                            .map_err(|e| format!("{e:#}"))
+                            tokio::task::spawn_blocking(move || save_to(&draft, &path, project))
+                                .await
+                                .map_err(|e| e.to_string())?
+                                .map_err(|e| format!("{e:#}"))
                         },
                         move |r| {
                             if project {
@@ -390,6 +410,13 @@ impl App {
                         .on_press_maybe((!self.busy).then_some(action(Browse(true))))
                 ]
                 .spacing(12),
+                text_input("Image or project folder", &self.import_path)
+                    .on_input(Message::ImportPath)
+                    .width(420),
+                button("Open path").on_press_maybe(
+                    (!self.busy && !self.import_path.trim().is_empty())
+                        .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
+                ),
                 text("PNG, JPEG or WebP").size(12).style(|t| text::Style {
                     color: Some(style::muted(t))
                 }),
@@ -490,10 +517,10 @@ impl App {
                         .width(Fill),
                     );
                     for (index, label, value) in [
-                        (0, "Mouse parallax", d.parallax),
-                        (1, "Breathing light", d.pulse),
-                        (2, "Soft blur", d.blur),
-                        (3, "Vignette", d.vignette),
+                        (DesignEffect::Parallax, "Mouse parallax", d.parallax),
+                        (DesignEffect::Pulse, "Breathing light", d.pulse),
+                        (DesignEffect::Blur, "Soft blur", d.blur),
+                        (DesignEffect::Vignette, "Vignette", d.vignette),
                     ] {
                         controls = controls.push(
                             checkbox(value)
@@ -669,6 +696,51 @@ mod tests {
         let _ = app.designer_update(DesignerMessage::Saved(Ok(false)));
         assert!(app.designer.dirty);
         let _ = app.designer_update(DesignerMessage::Saved(Err("disk full".into())));
+        assert!(app.designer.dirty);
+        let _ = app.designer_update(DesignerMessage::Saved(Ok(true)));
+        assert!(!app.designer.dirty);
+    }
+}
+
+fn save_to(draft: &Draft, path: &std::path::Path, project: bool) -> Result<bool> {
+    if project {
+        draft.save_project(path)?;
+    } else {
+        draft.export(path)?;
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    #[test]
+    fn path_saves_keep_ui_edits_and_never_replace_existing_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let draft = Draft::from_image(&source).unwrap();
+        let (mut app, _) = App::new(
+            Library::open(Some(dir.path().join("library"))).unwrap(),
+            Settings::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        app.designer.draft = Some(Arc::new(draft));
+        let _ = app.designer_update(DesignerMessage::Name("Audited edit".into()));
+        let _ = app.designer_update(DesignerMessage::Value("brightness".into(), 0.6));
+        let project = dir.path().join("project");
+        let exported = dir.path().join("export.wisp");
+        let draft = app.designer.draft.as_ref().unwrap();
+        assert!(save_to(draft, &project, true).unwrap());
+        assert!(save_to(draft, &exported, false).unwrap());
+        let reopened = Draft::open_project(&project).unwrap();
+        assert_eq!(reopened.design.name, "Audited edit");
+        assert_eq!(reopened.design.values["brightness"], 0.6);
+        assert!(save_to(draft, &project, true).is_err());
+        assert!(save_to(draft, &exported, false).is_err());
+        let _ = app.designer_update(DesignerMessage::Saved(Err("destination exists".into())));
         assert!(app.designer.dirty);
         let _ = app.designer_update(DesignerMessage::Saved(Ok(true)));
         assert!(!app.designer.dirty);

@@ -1,3 +1,5 @@
+#[path = "audit_ui.rs"]
+mod audit_ui;
 #[path = "designer_ui.rs"]
 mod designer_ui;
 #[path = "graph_canvas.rs"]
@@ -55,6 +57,8 @@ pub struct LaunchOptions {
     pub check: bool,
     pub frames: Option<u64>,
     pub screenshot: Option<PathBuf>,
+    pub screenshot_delay: Duration,
+    pub audit_commands: Option<PathBuf>,
 }
 pub fn run(mut options: LaunchOptions) -> Result<()> {
     if options.import.as_ref().is_some_and(|p| is_image(p)) {
@@ -93,6 +97,10 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         println!("Valid library: {} wallpapers", items.len());
         return Ok(());
     }
+    let audit_commands = audit_ui::load(options.audit_commands.as_deref())
+        .inspect_err(|error| eprintln!("AUDIT_FAILED: {error:#}"))?;
+    let exit_failure = Arc::new(Mutex::new(None::<String>));
+    let app_exit_failure = exit_failure.clone();
     iced::application(
         move || {
             let (mut app, task) = App::new(
@@ -104,6 +112,9 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
             app.pending_design = options.create.clone();
             app.pending_graph = options.graph.clone();
             app.screenshot = options.screenshot.clone();
+            app.screenshot_delay = options.screenshot_delay;
+            app.exit_failure = app_exit_failure.clone();
+            app.audit_commands = audit_commands.clone();
             (app, task)
         },
         App::update,
@@ -127,6 +138,9 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         ..Default::default()
     })
     .run()?;
+    if let Some(error) = exit_failure.lock().unwrap().take() {
+        anyhow::bail!(error);
+    }
     Ok(())
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,6 +211,7 @@ enum Message {
     PausePreview,
     Tick(Instant),
     Poll,
+    AuditPoll,
     DaemonStatus(Outcome<bool>),
     Event(iced::Event),
     Screenshot(iced::window::Screenshot),
@@ -253,6 +268,14 @@ struct App {
     frame_limit: Option<u64>,
     screenshot: Option<PathBuf>,
     started: Instant,
+    screenshot_delay: Duration,
+    capturing: bool,
+    capture_started: Instant,
+    capture_exit: bool,
+    startup_error: Option<String>,
+    exit_failure: Arc<Mutex<Option<String>>>,
+    audit_commands: std::collections::VecDeque<audit_ui::Command>,
+    audit_wait_until: Option<Instant>,
 }
 fn work<T: Send + 'static>(
     job: impl FnOnce() -> Result<T> + Send + 'static,
@@ -292,6 +315,10 @@ impl App {
                 .map(|c| c.audio.clone())
                 .unwrap_or_default(),
         );
+        let config_result_error = config_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"));
         let app = Self {
             audio,
             audio_devices: vec![AudioChoice {
@@ -335,6 +362,14 @@ impl App {
             frame_limit: frames,
             screenshot: None,
             started: Instant::now(),
+            screenshot_delay: Duration::from_secs(1),
+            capturing: false,
+            capture_started: Instant::now(),
+            capture_exit: true,
+            startup_error: config_result_error,
+            exit_failure: Arc::new(Mutex::new(None)),
+            audit_commands: Default::default(),
+            audit_wait_until: None,
         };
         let scan = work(
             move || {
@@ -391,6 +426,21 @@ impl App {
         )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        let startup_error = match &message {
+            Message::Scanned(Err(error))
+            | Message::Loaded(Err(error))
+            | Message::Designer(DesignerMessage::Opened(Err(error)))
+            | Message::Designer(DesignerMessage::Compiled(Err(error)))
+            | Message::Graph(graph_ui::GraphMessage::Opened(Err(error)))
+            | Message::Graph(graph_ui::GraphMessage::Compiled(_, Err(error))) => {
+                Some(error.clone())
+            }
+            Message::Scanned(Ok((_, errors))) if !errors.is_empty() => Some(errors.join("; ")),
+            _ => None,
+        };
+        if let Some(error) = startup_error {
+            self.startup_error = Some(error);
+        }
         match message {
             Message::Graph(message) => return self.graph_update(message),
             Message::Designer(message) => return self.designer_update(message),
@@ -767,20 +817,12 @@ impl App {
                     if let Some(error) = &status.error {
                         self.status = error.clone();
                     }
-                    if self.frame_limit.is_some_and(|n| status.frames >= n) {
-                        println!("Rendered {} live preview frames", status.frames);
-                        self.frame_limit = None;
-                        if self.screenshot.is_some() {
-                            return iced::window::latest()
-                                .and_then(iced::window::screenshot)
-                                .map(Message::Screenshot);
-                        }
-                        return iced::exit();
-                    }
                 }
                 self.last_tick = now;
             }
+            Message::AuditPoll => return self.audit_poll(),
             Message::Screenshot(screenshot) => {
+                self.capturing = false;
                 if let Some(path) = self.screenshot.take() {
                     let result = (|| -> Result<()> {
                         use ::image::ImageEncoder;
@@ -800,17 +842,17 @@ impl App {
                     })();
                     if let Err(error) = result {
                         eprintln!("Could not save screenshot: {error:#}");
-                        std::process::exit(1);
+                        *self.exit_failure.lock().unwrap() =
+                            Some(format!("Could not save screenshot: {error:#}"));
+                        return iced::exit();
                     }
                     println!("Saved application screenshot: {}", path.display());
                 }
-                return iced::exit();
+                if self.capture_exit {
+                    return iced::exit();
+                }
             }
             Message::Poll => {
-                if self.frame_limit.is_some() && self.started.elapsed() > Duration::from_secs(45) {
-                    eprintln!("Wisp smoke test timed out: {}", self.status);
-                    std::process::exit(1);
-                }
                 if !self.daemon_polling {
                     self.daemon_polling = true;
                     let library = self.library.clone();
@@ -885,6 +927,13 @@ impl App {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Poll),
             iced::event::listen().map(Message::Event),
         ];
+        if self.frame_limit.is_some()
+            || self.screenshot.is_some()
+            || !self.audit_commands.is_empty()
+        {
+            subscriptions
+                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::AuditPoll));
+        }
         if self.page == Page::Designer && self.designer.paint_pending {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(200))
