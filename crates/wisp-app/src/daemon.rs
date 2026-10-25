@@ -77,8 +77,12 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
 }
 pub fn running(library: &Library) -> Result<bool> {
     let file = lock_file(&library.root.join("daemon.lock"))?;
-    match file.try_lock_exclusive() {
-        Ok(()) => Ok(false),
+    // Concurrent observers must not mistake one another for the exclusive daemon owner.
+    match FileExt::try_lock_shared(&file) {
+        Ok(()) => {
+            FileExt::unlock(&file)?;
+            Ok(false)
+        }
         Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
             Ok(true)
         }
@@ -304,6 +308,28 @@ mod tests {
         owner.set_len(0).unwrap();
         owner.rewind().unwrap();
         writeln!(owner, "{pid}").unwrap();
+    }
+
+    #[test]
+    fn concurrent_observers_do_not_make_a_crashed_daemon_appear_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.lock");
+        let probe = lock_file(&path).unwrap();
+        publish_owner_pid(&library, &probe, std::process::id());
+        let mut stale = DaemonStatus::starting(&Default::default());
+        stale.ready = true;
+        stale.write(&library.root.join("daemon.status.json")).unwrap();
+
+        let _observation = wisp_host::status::StartupPublicationGate::try_observe(&path)
+            .unwrap()
+            .unwrap();
+        FileExt::try_lock_shared(&probe).unwrap();
+        // A competing reader's probe cannot establish ownership of the stale ready snapshot.
+        assert!(!daemon::running(&library).unwrap());
+        assert!(daemon::status(&library).unwrap().is_none());
+        assert!(!daemon::ready(&library).unwrap());
+        FileExt::unlock(&probe).unwrap();
     }
 
     #[test]
