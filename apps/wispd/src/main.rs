@@ -117,13 +117,21 @@ fn main() -> Result<()> {
             .truncate(false)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(&path)?;
         file.try_lock_exclusive()
             .context("a managed wallpaper daemon is already running")?;
         // Refresh ownership before status publication so a previous process's snapshot is stale.
         use std::io::Write;
         file.set_len(0)?;
-        writeln!(&file, "{}", std::process::id())?;
+        let owner = format!("{}\n", std::process::id());
+        (&file).write_all(owner.as_bytes())?;
+        #[cfg(windows)]
+        {
+            // Other handles cannot read the exclusively locked file on Windows.
+            let mut owner_path = path.into_os_string();
+            owner_path.push(".pid");
+            std::fs::write(PathBuf::from(owner_path), owner.as_bytes())?;
+        }
         Some(file)
     } else {
         None

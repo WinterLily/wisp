@@ -85,10 +85,40 @@ pub fn running(library: &Library) -> Result<bool> {
         Err(error) => Err(error.into()),
     }
 }
+
+fn owner_pid_path(library: &Library) -> PathBuf {
+    // Windows denies reads from a separately opened handle while the lock is held.
+    library.root.join(if cfg!(windows) {
+        "daemon.lock.pid"
+    } else {
+        "daemon.lock"
+    })
+}
+
 pub fn status(library: &Library) -> Result<Option<wisp_host::status::DaemonStatus>> {
     if !running(library)? {
         return Ok(None);
     }
+    let owner = match wisp_io::read_bounded(&owner_pid_path(library), 11) {
+        Ok(owner) => owner,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    // A newline marks a complete PID publication, even if a reader sees a partial write.
+    let owner_pid = std::str::from_utf8(&owner)
+        .ok()
+        .and_then(|owner| owner.strip_suffix('\n'))
+        .and_then(|owner| owner.parse::<u32>().ok())
+        .filter(|pid| *pid != 0);
+    let Some(owner_pid) = owner_pid else {
+        return Ok(None);
+    };
     let path = library.root.join("daemon.status.json");
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -101,7 +131,8 @@ pub fn status(library: &Library) -> Result<Option<wisp_host::status::DaemonStatu
         return Ok(None);
     }
     match wisp_host::status::DaemonStatus::read(&path) {
-        Ok(status) => Ok(Some(status)),
+        Ok(status) if status.pid == owner_pid => Ok(Some(status)),
+        Ok(_) => Ok(None),
         Err(error)
             if error
                 .downcast_ref::<std::io::Error>()
@@ -252,7 +283,24 @@ impl Drop for OwnedDaemon {
 mod tests {
     use super::*;
     use crate::daemon;
+    use std::io::{Seek, Write};
     use wisp_host::status::DaemonStatus;
+
+    fn owner_file(library: &Library, lock: &std::fs::File) -> std::fs::File {
+        if cfg!(windows) {
+            lock_file(&owner_pid_path(library)).unwrap()
+        } else {
+            lock.try_clone().unwrap()
+        }
+    }
+
+    fn publish_owner_pid(library: &Library, lock: &std::fs::File, pid: u32) {
+        let mut owner = owner_file(library, lock);
+        owner.set_len(0).unwrap();
+        owner.rewind().unwrap();
+        writeln!(owner, "{pid}").unwrap();
+    }
+
     #[test]
     fn process_lock_alone_and_stale_status_do_not_imply_initialized_readiness() {
         use fs2::FileExt;
@@ -260,6 +308,7 @@ mod tests {
         let library = Library::open(Some(temporary.path().to_owned())).unwrap();
         let lock = crate::library::lock_file(&library.root.join("daemon.lock")).unwrap();
         lock.try_lock_exclusive().unwrap();
+        publish_owner_pid(&library, &lock, std::process::id());
         assert!(daemon::running(&library).unwrap());
         assert!(!daemon::ready(&library).unwrap());
         let path = library.root.join("daemon.status.json");
@@ -322,6 +371,7 @@ mod tests {
         let published = std::fs::metadata(&path).unwrap().modified().unwrap();
         let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
         lock.try_lock_exclusive().unwrap();
+        publish_owner_pid(&library, &lock, snapshot.pid);
         lock.set_modified(published + Duration::from_secs(2))
             .unwrap();
         assert!(running(&library).unwrap());
@@ -329,6 +379,63 @@ mod tests {
         assert!(!ready(&library).unwrap());
         lock.set_modified(published - Duration::from_secs(2))
             .unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn equal_timestamps_cannot_make_a_previous_owners_snapshot_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let owner_pid = std::process::id();
+        publish_owner_pid(&library, &lock, owner_pid);
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.pid = owner_pid.wrapping_add(1);
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        lock.set_modified(published).unwrap();
+        assert_eq!(lock.metadata().unwrap().modified().unwrap(), published);
+        assert!(running(&library).unwrap());
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+
+        snapshot.pid = owner_pid;
+        snapshot.write(&path).unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn incomplete_lock_pid_publication_is_not_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.ready = true;
+        let path = library.root.join("daemon.status.json");
+        snapshot.write(&path).unwrap();
+        assert!(status(&library).unwrap().is_none());
+        let mut owner = owner_file(&library, &lock);
+        for bytes in [
+            Vec::new(),
+            snapshot.pid.to_string().into_bytes(),
+            b"0\n".to_vec(),
+            b"invalid\n".to_vec(),
+            b"\xff\n".to_vec(),
+        ] {
+            owner.set_len(0).unwrap();
+            owner.rewind().unwrap();
+            owner.write_all(&bytes).unwrap();
+            snapshot.write(&path).unwrap();
+            assert!(running(&library).unwrap());
+            assert!(status(&library).unwrap().is_none(), "{bytes:?}");
+            assert!(!ready(&library).unwrap(), "{bytes:?}");
+        }
+        publish_owner_pid(&library, &lock, snapshot.pid);
+        snapshot.write(&path).unwrap();
         assert!(ready(&library).unwrap());
     }
 }
