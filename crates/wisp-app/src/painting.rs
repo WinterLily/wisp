@@ -83,7 +83,18 @@ pub(crate) fn paint_brush(
                 ((radius - distance) / edge).clamp(0., 1.)
             };
             let pixel = image.get_pixel_mut(x, y);
-            pixel.0[0] = (pixel.0[0] as f32 * (1. - alpha) + value as f32 * alpha).round() as u8;
+            let previous = pixel.0[0];
+            let blended = (previous as f32 * (1. - alpha) + value as f32 * alpha).round() as u8;
+            // Low flow must keep responding near black and white despite the mask's 8-bit precision.
+            pixel.0[0] = if flow.is_some() && alpha > 0. && blended == previous {
+                match previous.cmp(&value) {
+                    std::cmp::Ordering::Less => previous + 1,
+                    std::cmp::Ordering::Greater => previous - 1,
+                    std::cmp::Ordering::Equal => previous,
+                }
+            } else {
+                blended
+            };
         }
     }
     Ok([low[0], low[1], high[0], high[1]])
@@ -154,6 +165,18 @@ mod tests {
         assert!(built_up > center);
         dab(&mut image, 0);
         assert!(image.get_pixel(100, 100).0[0] < built_up);
+    }
+
+    #[test]
+    fn low_flow_reaches_white_and_black_without_stalling_at_rounding_thresholds() {
+        let mut image = image::GrayImage::new(16, 16);
+        for value in [255, 0] {
+            for _ in 0..300 {
+                paint_brush(&mut image, [0.5; 2], [0.5; 2], 0.25, value, 1., Some(0.01)).unwrap();
+            }
+            assert_eq!(image.get_pixel(8, 8).0[0], value);
+            assert_eq!(image.get_pixel(0, 0).0[0], 0);
+        }
     }
 
     #[test]
