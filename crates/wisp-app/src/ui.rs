@@ -8,6 +8,8 @@ mod graph_canvas;
 mod graph_ui;
 #[path = "icons.rs"]
 mod icons;
+#[path = "motion.rs"]
+mod motion;
 #[cfg(test)]
 #[path = "slider_tests.rs"]
 mod slider_tests;
@@ -25,8 +27,7 @@ use iced::{
     Length::Fill,
     Subscription, Task,
     widget::{
-        button as iced_button, column, container, image, row, scrollable as iced_scrollable, space,
-        text as iced_text,
+        column, container, image, row, scrollable as iced_scrollable, space, text as iced_text,
     },
 };
 use icons::{Icon, icon_button};
@@ -40,8 +41,8 @@ use wisp_format::{Parameter, ParameterValue};
 use wisp_host::{Assignment, Config, MonitorInfo};
 use wisp_runtime::{Globals, Wallpaper};
 
-fn button<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Button<'a, Message> {
-    iced_button(content)
+fn button<'a>(content: impl Into<Element<'a, Message>>) -> motion::Button<'a, Message> {
+    motion::Button::new(content)
         .padding([8, 12])
         .style(style::secondary)
 }
@@ -1075,12 +1076,13 @@ impl App {
     }
     fn view(&self) -> Element<'_, Message> {
         let nav = |icon, label, page| {
-            iced_button(
+            motion::Button::new(
                 row![icons::glyph(icon, 15), text(label).size(14)]
                     .spacing(8)
                     .align_y(iced::Center),
             )
             .padding([8, 12])
+            .selected(self.page == page)
             .style(if self.page == page {
                 style::selected
             } else {
@@ -1116,9 +1118,13 @@ impl App {
                 .push(iced::widget::rule::horizontal(1).style(style::divider));
         }
         layout = layout.push(
-            container(content)
-                .padding(if editing { 8 } else { 24 })
-                .height(Fill),
+            container(motion::entrance(
+                content,
+                self.page as u64,
+                iced::Vector::new(0., 12.),
+            ))
+            .padding(if editing { 8 } else { 24 })
+            .height(Fill),
         );
         // Keep operational feedback available without turning it into another panel.
         if !self.focus_mode || !editing {
@@ -1303,6 +1309,7 @@ impl App {
             );
             cards = cards.push(
                 button(card)
+                    .selected(self.selected.as_ref() == Some(&item.record.key))
                     .width(Fill)
                     .padding(10)
                     .style(if self.selected.as_ref() == Some(&item.record.key) {
@@ -1402,7 +1409,7 @@ impl App {
                     .spacing(14)
                     .into(),
                 };
-                workspace = workspace.push(
+                workspace = workspace.push(motion::entrance(
                     container(
                         column![
                             row![
@@ -1424,7 +1431,9 @@ impl App {
                     .width(280)
                     .height(Fill)
                     .style(style::panel),
-                );
+                    panel as u64,
+                    iced::Vector::new(24., 0.),
+                ));
             }
             detail = detail.push(workspace).push(
                 row![

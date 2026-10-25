@@ -66,6 +66,7 @@ pub(super) enum DesignerSelection {
     #[default]
     Image,
     Effect(DesignEffect),
+    LayerEffect(usize),
     Color,
 }
 
@@ -122,6 +123,16 @@ pub(super) struct Designer {
     pub compile_pending: bool,
 }
 impl Designer {
+    pub(super) fn layer_target(&self) -> Option<crate::layers::LayerTarget> {
+        match self.selection {
+            DesignerSelection::Image => Some(crate::layers::LayerTarget::Image(self.layer)),
+            DesignerSelection::LayerEffect(effect) => {
+                Some(crate::layers::LayerTarget::Effect(self.layer, effect))
+            }
+            _ => None,
+        }
+    }
+
     fn airbrush_flow(&self) -> f32 {
         if self.airbrush_flow == 0. {
             0.15
@@ -150,8 +161,7 @@ impl App {
                 }
                 self.designer.selection = selection;
                 self.designer.panel = Some(DesignerPanel::Layers);
-                self.designer.lasso_vertices.clear();
-                self.designer.paint_session += 1;
+                self.refresh_painter();
             }
             Layer(m) => return self.layer_update(m),
             PaintTick(now) if self.designer.paint_due(now) && !self.busy => {
@@ -211,7 +221,13 @@ impl App {
             Opened(result) => {
                 self.busy = false;
                 match result {
-                    Ok(Some((draft, saved))) => {
+                    Ok(Some((mut draft, saved))) => {
+                        if let Some(stack) = &mut Arc::make_mut(&mut draft).layers
+                            && let Err(error) = stack.upgrade_effects()
+                        {
+                            self.status = format!("Could not open effects: {error:#}");
+                            return Task::none();
+                        }
                         self.designer.layer = 0;
                         self.designer.selection = DesignerSelection::Image;
                         self.designer.panel = Some(DesignerPanel::Layers);
@@ -510,40 +526,14 @@ impl App {
             .align_y(iced::Center)
         ]
         .spacing(6);
-        for effect in DesignEffect::ALL {
-            layers = layers.push(
-                row![
-                    checkbox(effect.enabled(&draft.design))
-                        .on_toggle_maybe(enabled.then_some(move |value| action(
-                            DesignerMessage::Toggle(effect, value)
-                        ))),
-                    button(
-                        row![
-                            icons::glyph(Icon::Effects, 14),
-                            text(effect.to_string()).size(14)
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Center)
-                    )
-                    .width(Fill)
-                    .style(if selection == DesignerSelection::Effect(effect) {
-                        style::selected
-                    } else {
-                        style::quiet
-                    })
-                    .on_press_maybe(enabled.then_some(action(DesignerMessage::Select(
-                        DesignerSelection::Effect(effect)
-                    )))),
-                ]
-                .spacing(8)
-                .align_y(iced::Center),
-            );
-        }
+        layers = layers
+            .push(self.layer_rows_view(image_layers))
+            .push(iced::widget::rule::horizontal(1).style(style::divider));
         layers = layers.push(
             button(
                 row![
                     icons::glyph(Icon::Adjust, 14),
-                    text("Color adjustments").size(14)
+                    text("Scene settings").size(14)
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
@@ -558,7 +548,6 @@ impl App {
                 enabled.then_some(action(DesignerMessage::Select(DesignerSelection::Color))),
             ),
         );
-        layers = layers.push(self.layer_rows_view(image_layers));
         let mut panel = column![].spacing(14);
         match selection {
             DesignerSelection::Image => {
@@ -568,6 +557,17 @@ impl App {
                     index,
                     image_layers.len(),
                 ));
+            }
+            DesignerSelection::LayerEffect(effect) => {
+                let index = self.designer.layer.min(image_layers.len() - 1);
+                if let Some(attached) = image_layers[index].effects.get(effect) {
+                    panel = panel.push(self.effect_settings_view(
+                        &image_layers[index],
+                        attached,
+                        index,
+                        effect,
+                    ));
+                }
             }
             DesignerSelection::Effect(effect) => {
                 panel = panel
@@ -586,7 +586,7 @@ impl App {
             }
             DesignerSelection::Color => {
                 panel = panel
-                    .push(text("Color adjustments").size(16))
+                    .push(text("Scene settings").size(16))
                     .push(text("Applies to the whole scene").size(12))
                     .push(
                         container(
@@ -596,21 +596,34 @@ impl App {
                         .width(Fill)
                         .style(style::panel),
                     );
+                for effect in DesignEffect::ALL {
+                    panel = panel
+                        .push(
+                            checkbox(effect.enabled(&draft.design))
+                                .label(effect.to_string().to_lowercase())
+                                .on_toggle_maybe(enabled.then_some(move |value| {
+                                    action(DesignerMessage::Toggle(effect, value))
+                                })),
+                        )
+                        .push(self.scene_controls_view(&draft.design, effect.controls()));
+                }
             }
         }
-        panel = panel
-            .push(iced::widget::rule::horizontal(1).style(style::divider))
-            .push(
-                pick_list(
-                    crate::designer::Preset::ALL.as_slice(),
-                    None::<crate::designer::Preset>,
-                    move |preset| action(DesignerMessage::Preset(preset)),
-                )
-                .placeholder("scene preset…")
-                .width(Fill),
-            );
+        if selection == DesignerSelection::Color {
+            panel = panel
+                .push(iced::widget::rule::horizontal(1).style(style::divider))
+                .push(
+                    pick_list(
+                        crate::designer::Preset::ALL.as_slice(),
+                        None::<crate::designer::Preset>,
+                        move |preset| action(DesignerMessage::Preset(preset)),
+                    )
+                    .placeholder("scene preset…")
+                    .width(Fill),
+                );
+        }
         column![
-            scrollable(layers).height(300),
+            container(scrollable(layers).height(iced::Shrink)).max_height(240),
             iced::widget::rule::horizontal(1).style(style::divider),
             scrollable(panel).height(Fill),
         ]
@@ -852,13 +865,15 @@ impl App {
                 controls,
             ]
             .spacing(16);
-            workspace = workspace.push(
+            workspace = workspace.push(motion::entrance(
                 container(inspector)
                     .padding(16)
                     .width(316)
                     .height(Fill)
                     .style(style::panel),
-            );
+                panel as u64,
+                iced::Vector::new(24., 0.),
+            ));
         }
         column![toolbar, workspace].spacing(6).height(Fill).into()
     }
@@ -896,6 +911,158 @@ mod tests {
         let mut expected: Vec<_> = CONTROLS.iter().map(|control| control.id).collect();
         expected.sort_unstable();
         assert_eq!(controls, expected);
+    }
+
+    fn settle(app: &mut App) {
+        let wallpaper = Arc::new(
+            Wallpaper::from_package(
+                &app.designer
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .compile()
+                    .unwrap()
+                    .package,
+            )
+            .unwrap(),
+        );
+        let _ = app.designer_update(DesignerMessage::Compiled(Ok((wallpaper, String::new()))));
+    }
+
+    #[test]
+    fn switching_attached_effects_flushes_only_their_own_masks_and_edits() {
+        use crate::layers::{ControlId, Effect};
+        let (_temporary, mut app) = layered_app();
+        for _ in 0..2 {
+            let _ = app.layer_update(LayerMessage::Effect(Effect::Hair));
+            settle(&mut app);
+        }
+        let _ = app.layer_update(LayerMessage::SelectEffect(0, 0));
+        let _ = app.layer_update(LayerMessage::Paint([0.2, 0.2], [0.2, 0.2]));
+        assert!(app.designer.paint_dirty);
+        let _ = app.layer_update(LayerMessage::SelectEffect(0, 1));
+        assert!(!app.designer.paint_dirty);
+        assert_eq!(
+            app.designer
+                .paint_pixels
+                .as_ref()
+                .unwrap()
+                .get_pixel(205, 205)
+                .0[0],
+            0
+        );
+        let _ = app.layer_update(LayerMessage::Paint([0.8, 0.8], [0.8, 0.8]));
+        let _ = app.layer_update(LayerMessage::Value(ControlId::Amplitude, 0.09));
+        let _ = app.layer_update(LayerMessage::SelectEffect(0, 0));
+        let pixels = app.designer.paint_pixels.as_ref().unwrap();
+        assert_eq!(pixels.get_pixel(205, 205).0[0], 255);
+        assert_eq!(pixels.get_pixel(819, 819).0[0], 0);
+        let _ = app.layer_update(LayerMessage::Select(0));
+        assert!(
+            app.designer
+                .paint_pixels
+                .as_ref()
+                .unwrap()
+                .pixels()
+                .all(|pixel| pixel.0[0] == 0)
+        );
+        let stack = app
+            .designer
+            .draft
+            .as_ref()
+            .unwrap()
+            .layers
+            .as_ref()
+            .unwrap();
+        assert_eq!(stack.layers[0].effects[0].settings.amplitude, 0.025);
+        assert_eq!(stack.layers[0].effects[1].settings.amplitude, 0.09);
+        let _ = app.layer_update(LayerMessage::SelectEffect(0, 1));
+        assert_eq!(
+            app.designer
+                .paint_pixels
+                .as_ref()
+                .unwrap()
+                .get_pixel(819, 819)
+                .0[0],
+            255
+        );
+        let _ = app.designer_update(DesignerMessage::Select(DesignerSelection::Color));
+        assert!(app.designer.paint_pixels.is_none());
+    }
+
+    #[test]
+    fn effect_reordering_removal_visibility_and_image_reordering_keep_attachments() {
+        use crate::layers::Effect;
+        let (_temporary, mut app) = layered_app();
+        for effect in [Effect::Hair, Effect::Clothing] {
+            let _ = app.layer_update(LayerMessage::Effect(effect));
+            settle(&mut app);
+        }
+        let selected_mask = app.designer.paint_asset.clone();
+        let _ = app.layer_update(LayerMessage::Move(false));
+        settle(&mut app);
+        assert_eq!(app.designer.selection, DesignerSelection::LayerEffect(0));
+        assert_eq!(app.designer.paint_asset, selected_mask);
+        let _ = app.layer_update(LayerMessage::EffectVisible(0, 0, false));
+        settle(&mut app);
+        assert!(
+            !app.designer
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .as_ref()
+                .unwrap()
+                .layers[0]
+                .effects[0]
+                .visible
+        );
+        let _ = app.layer_update(LayerMessage::Remove);
+        settle(&mut app);
+        assert_eq!(app.designer.selection, DesignerSelection::Image);
+        let stack = Arc::make_mut(app.designer.draft.as_mut().unwrap())
+            .layers
+            .as_mut()
+            .unwrap();
+        assert!(!stack.assets.contains_key(selected_mask.as_ref().unwrap()));
+        stack.layers.push(crate::layers::Layer::new(
+            "Foreground".into(),
+            "background".into(),
+        ));
+        let _ = app.layer_update(LayerMessage::Move(true));
+        settle(&mut app);
+        assert_eq!(app.designer.layer, 1);
+        let stack = app
+            .designer
+            .draft
+            .as_ref()
+            .unwrap()
+            .layers
+            .as_ref()
+            .unwrap();
+        assert_eq!(stack.layers[1].effects[0].settings.effect, Effect::Hair);
+        assert!(stack.layers[0].effects.is_empty());
+    }
+
+    #[test]
+    fn invalid_or_busy_effect_selection_preserves_unsaved_mask_target() {
+        use crate::layers::Effect;
+        let (_temporary, mut app) = layered_app();
+        let _ = app.layer_update(LayerMessage::Effect(Effect::Hair));
+        settle(&mut app);
+        let original_mask = app.designer.paint_asset.clone();
+        let _ = app.layer_update(LayerMessage::SelectEffect(0, 99));
+        assert_eq!(app.designer.selection, DesignerSelection::LayerEffect(0));
+        assert_eq!(app.designer.paint_asset, original_mask);
+        app.busy = true;
+        let _ = app.layer_update(LayerMessage::Select(0));
+        assert_eq!(app.designer.selection, DesignerSelection::LayerEffect(0));
+        app.busy = false;
+        app.designer.paint_dirty = true;
+        app.designer.paint_asset = None;
+        let _ = app.layer_update(LayerMessage::Select(0));
+        assert_eq!(app.designer.selection, DesignerSelection::LayerEffect(0));
+        assert!(app.designer.paint_dirty);
     }
 
     #[test]

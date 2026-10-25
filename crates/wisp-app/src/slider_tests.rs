@@ -19,7 +19,7 @@ fn designer() -> (tempfile::TempDir, App) {
     app.page = Page::Designer;
     app.designer.draft = Some(Arc::new(draft));
     app.designer.panel = Some(DesignerPanel::Layers);
-    app.designer.selection = DesignerSelection::Effect(DesignEffect::Blur);
+    app.designer.selection = DesignerSelection::Color;
     let _ = app.designer_update(DesignerMessage::Compiled(Ok((wallpaper, String::new()))));
     (temporary, app)
 }
@@ -126,7 +126,7 @@ fn renderer() -> iced_wgpu::Renderer {
     iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(14.))
 }
 
-const WINDOW_SIZE: Size = Size::new(1180., 1800.);
+const WINDOW_SIZE: Size = Size::new(1180., 1400.);
 
 fn slider_bounds(layout: Layout<'_>, bounds: &mut Vec<Rectangle>) {
     if layout.children().count() == 0
@@ -180,21 +180,45 @@ fn dispatch(
 #[ignore = "requires a working graphics adapter"]
 fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
     let renderer = renderer();
-    for (selection, layers, expected_sliders) in [
-        (DesignerSelection::Effect(DesignEffect::Blur), false, 1),
-        (DesignerSelection::Effect(DesignEffect::Vignette), false, 1),
-        (DesignerSelection::Effect(DesignEffect::Pulse), false, 2),
-        (DesignerSelection::Effect(DesignEffect::Parallax), false, 1),
-        (DesignerSelection::Color, false, 2),
-        (DesignerSelection::Image, true, 12),
+    for (selection, tab, expected_sliders) in [
+        (DesignerSelection::Color, LayerTab::Adjust, 7),
+        (
+            DesignerSelection::Effect(DesignEffect::Parallax),
+            LayerTab::Adjust,
+            1,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Pulse),
+            LayerTab::Adjust,
+            2,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Blur),
+            LayerTab::Adjust,
+            1,
+        ),
+        (
+            DesignerSelection::Effect(DesignEffect::Vignette),
+            LayerTab::Adjust,
+            1,
+        ),
+        (DesignerSelection::Image, LayerTab::Adjust, 8),
+        (DesignerSelection::Image, LayerTab::Mask, 1),
+        (DesignerSelection::LayerEffect(0), LayerTab::Adjust, 5),
     ] {
         let (_temporary, mut app) = designer();
         app.designer.selection = selection;
+        app.designer.layer_tab = tab;
+        let layers = matches!(
+            selection,
+            DesignerSelection::Image | DesignerSelection::LayerEffect(_)
+        );
         if layers {
             let stack = Arc::make_mut(app.designer.draft.as_mut().unwrap()).enable_layers();
-            stack.layers[0].preset(crate::layers::Effect::Hair);
-            app.designer.panel = Some(DesignerPanel::Layers);
-            app.designer.layer_tab = LayerTab::Adjust;
+            stack.add_effect(0, crate::layers::Effect::Hair).unwrap();
+            if tab == LayerTab::Mask {
+                stack.blank_mask(0, false).unwrap();
+            }
         }
         app.busy = true;
         app.designer.compiling = true;
@@ -207,7 +231,11 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
         );
         let mut bounds = Vec::new();
         slider_bounds(Layout::new(&node), &mut bounds);
-        assert_eq!(bounds.len(), expected_sliders);
+        assert_eq!(
+            bounds.len(),
+            expected_sliders,
+            "unexpected sliders for {selection:?}"
+        );
         drop(element);
         for bounds in bounds {
             for (event, fraction) in [
@@ -228,7 +256,14 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
                         assert_eq!(draft.design.values[id], *value);
                     }
                     Message::Designer(DesignerMessage::Layer(LayerMessage::Value(id, value))) => {
-                        assert_eq!(draft.layers.as_ref().unwrap().layers[0].value(*id), *value);
+                        let layer = &draft.layers.as_ref().unwrap().layers[0];
+                        let actual = match selection {
+                            DesignerSelection::LayerEffect(index) => {
+                                layer.effects[index].value(*id)
+                            }
+                            _ => layer.value(*id),
+                        };
+                        assert_eq!(actual, *value);
                     }
                     _ => panic!("slider emitted an unexpected message"),
                 }

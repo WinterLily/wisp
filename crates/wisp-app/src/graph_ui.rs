@@ -957,7 +957,7 @@ impl App {
                         );
                 }
             }
-            workspace = workspace.push(
+            workspace = workspace.push(motion::entrance(
                 container(
                     column![
                         row![
@@ -979,7 +979,9 @@ impl App {
                 .width(300)
                 .height(Fill)
                 .style(style::panel),
-            );
+                panel as u64,
+                iced::Vector::new(24., 0.),
+            ));
         }
         column![toolbar, workspace].spacing(6).height(Fill).into()
     }

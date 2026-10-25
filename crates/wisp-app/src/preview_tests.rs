@@ -849,3 +849,167 @@ fn rejected_gpu_replacement_preserves_pixels_without_claiming_success_and_recove
     assert_eq!(status.frames, 1);
     assert_eq!(status.rendered_generation, Some(3));
 }
+
+#[test]
+#[ignore = "requires a working graphics adapter"]
+fn attached_effect_masks_anchor_their_own_regions_and_keep_preview_export_parity() {
+    use crate::{
+        designer::{Draft, Preset},
+        layers::{Effect, LayerTarget},
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("source.png");
+    image::RgbaImage::from_fn(96, 64, |x, y| {
+        image::Rgba([
+            ((x * 31 + y * 19) % 256) as u8,
+            ((x * 11 + y * 41) % 256) as u8,
+            ((x * 23 + y * 13) % 256) as u8,
+            255,
+        ])
+    })
+    .save(&source)
+    .unwrap();
+    let mut draft = Draft::from_image(&source).unwrap();
+    draft.design.preset(Preset::Still);
+    let stack = draft.enable_layers();
+    for (index, effect, y) in [(0, Effect::Hair, 0.2), (1, Effect::Clothing, 0.8)] {
+        stack.add_effect(0, effect).unwrap();
+        stack
+            .paint_target(LayerTarget::Effect(0, index), [0., y], [1., y], 0.15, 255)
+            .unwrap();
+        let effect = &mut stack.layers[0].effects[index];
+        effect.mask.as_mut().unwrap().feather = 0.;
+        effect.settings.amplitude = 0.08;
+    }
+    let gpu = pollster::block_on(Gpu::new(
+        &wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default()),
+        None,
+    ))
+    .unwrap();
+    let mut pipeline = Pipeline::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let wallpaper = Arc::new(Wallpaper::from_package(&draft.compile().unwrap().package).unwrap());
+    let mut preview = Preview {
+        generation: 100,
+        parameters: Arc::new(
+            wallpaper
+                .parameters()
+                .iter()
+                .map(|parameter| (parameter.id.clone(), parameter.default.clone()))
+                .collect(),
+        ),
+        wallpaper,
+        globals: Globals::new(96, 64),
+        status: Arc::new(Mutex::new(Status::default())),
+    };
+    let bounds = Rectangle::new(iced::Point::ORIGIN, iced::Size::new(96., 64.));
+    preview.globals.time = 0.5;
+    let first = frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.5, 0.5]);
+    preview.globals.time = 2.;
+    preview.globals.frame += 1;
+    let animated = frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.5, 0.5]);
+    let rows = |range: std::ops::Range<usize>| range.start * 96 * 4..range.end * 96 * 4;
+    assert_eq!(first[rows(27..36)], animated[rows(27..36)]);
+    assert_ne!(first[rows(7..18)], animated[rows(7..18)]);
+    assert_ne!(first[rows(46..57)], animated[rows(46..57)]);
+    for y in 0..64 {
+        assert!(
+            animated[(y * 96 + 12) * 4..(y * 96 + 84) * 4]
+                .chunks_exact(4)
+                .all(|pixel| pixel[3] == 255)
+        );
+    }
+    let output = temporary.path().join("attached.wisp");
+    draft.export(&output).unwrap();
+    let package = wisp_format::Package::load(&output, &Default::default()).unwrap();
+    let renderer = pollster::block_on(Renderer::from_wallpaper(
+        &gpu,
+        &Wallpaper::from_package(&package).unwrap(),
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ))
+    .unwrap();
+    let exported = renderer
+        .render_rgba(&gpu, 96, 64, &preview.globals)
+        .unwrap();
+    assert!(
+        animated
+            .iter()
+            .zip(exported)
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 1)
+    );
+    let stack = draft.layers.as_mut().unwrap();
+    stack.layers[0].effects[0].visible = false;
+    let wallpaper = Wallpaper::from_package(&draft.compile().unwrap().package).unwrap();
+    let renderer = pollster::block_on(Renderer::from_wallpaper(
+        &gpu,
+        &wallpaper,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ))
+    .unwrap();
+    let without_hair = renderer
+        .render_rgba(&gpu, 96, 64, &preview.globals)
+        .unwrap();
+    assert!(
+        animated[rows(46..57)]
+            .iter()
+            .zip(&without_hair[rows(46..57)])
+            .all(|(actual, expected)| actual.abs_diff(*expected) <= 1)
+    );
+    assert_ne!(animated[rows(7..18)], without_hair[rows(7..18)]);
+}
+
+#[test]
+#[ignore = "requires a working graphics adapter"]
+fn attached_weather_does_not_modify_layers_visible_through_its_images_alpha() {
+    use crate::{
+        designer::{Draft, Preset},
+        layers::{Effect, ImportTarget},
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("background.png");
+    std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+    let foreground = temporary.path().join("foreground.png");
+    image::RgbaImage::from_fn(96, 64, |x, _| {
+        if x < 48 {
+            image::Rgba([120, 180, 220, 255])
+        } else {
+            image::Rgba([0; 4])
+        }
+    })
+    .save(&foreground)
+    .unwrap();
+    let mut draft = Draft::from_image(&source).unwrap();
+    draft.design.preset(Preset::Still);
+    let stack = draft.enable_layers();
+    stack.import(&foreground, ImportTarget::Layer).unwrap();
+    stack.add_effect(1, Effect::Rain).unwrap();
+    stack.layers[1].effects[0].settings.strength = 1.;
+    let gpu = pollster::block_on(Gpu::new(
+        &wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default()),
+        None,
+    ))
+    .unwrap();
+    let render = |draft: &Draft| {
+        let wallpaper = Wallpaper::from_package(&draft.compile().unwrap().package).unwrap();
+        let renderer = pollster::block_on(Renderer::from_wallpaper(
+            &gpu,
+            &wallpaper,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ))
+        .unwrap();
+        let mut globals = Globals::new(96, 64);
+        globals.time = 1.25;
+        renderer.render_rgba(&gpu, 96, 64, &globals).unwrap()
+    };
+    let weather = render(&draft);
+    draft.layers.as_mut().unwrap().layers[1].effects[0].visible = false;
+    let still = render(&draft);
+    assert_ne!(weather, still);
+    for y in 0..64 {
+        let range = (y * 96 + 60) * 4..(y * 96 + 96) * 4;
+        assert_eq!(
+            weather[range.clone()],
+            still[range],
+            "attached rain leaked through transparent image pixels"
+        );
+    }
+}

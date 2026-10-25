@@ -69,10 +69,25 @@ pub(super) enum Command {
         kind: String,
         #[serde(default)]
         index: usize,
+        #[serde(default)]
+        effect: usize,
     },
     LayerEffect {
         effect: String,
     },
+    LayerEffectSelect {
+        layer: usize,
+        effect: usize,
+    },
+    LayerEffectVisible {
+        layer: usize,
+        effect: usize,
+        visible: bool,
+    },
+    LayerMove {
+        up: bool,
+    },
+    LayerRemove {},
     LayerTab {
         value: String,
     },
@@ -183,14 +198,16 @@ fn validate_state_expectations(
                 )
             }),
             "busy" | "paused" | "focus" | "designer_dirty" | "designer_valid" | "graph_dirty"
-            | "graph_valid" | "preview_error" | "preview_ready" | "paint_dirty" => {
-                value.is_boolean()
+            | "graph_valid" | "preview_error" | "preview_ready" | "paint_dirty"
+            | "paint_expanded" => value.is_boolean(),
+            "parameter_errors" | "designer_layer" | "designer_effect_count" => {
+                value.as_u64().is_some()
             }
-            "parameter_errors" | "designer_layer" => value.as_u64().is_some(),
             "designer_selection" => value.as_str().is_some_and(|value| {
-                matches!(value, "image" | "color")
+                matches!(value, "image" | "color" | "attached_effect")
                     || DesignEffect::ALL.iter().any(|effect| effect.key() == value)
             }),
+            "designer_effect" => value.is_null() || value.as_u64().is_some(),
             "graph_nodes" => value.is_null() || value.as_u64().is_some(),
             "designer_name" => value.is_null() || value.is_string(),
             "status" | "graph_diagnostic" | "status_contains" => value.is_string(),
@@ -343,15 +360,35 @@ impl Command {
             DesignerExport { path } => designer(DesignerMessage::SaveTo(false, path)),
             LayerEnable {} => layer(LayerMessage::Enable),
             LayerSelect { index } => layer(LayerMessage::Select(index)),
-            LayerImport { path, kind, index } => layer(LayerMessage::ImportPath(
+            LayerImport {
+                path,
+                kind,
+                index,
+                effect,
+            } => layer(LayerMessage::ImportPath(
                 match kind.as_str() {
                     "layer" => crate::layers::ImportTarget::Layer,
                     "mask" => crate::layers::ImportTarget::Mask(index),
                     "displacement" => crate::layers::ImportTarget::Displacement(index),
+                    "effect_mask" => crate::layers::ImportTarget::EffectMask(index, effect),
+                    "effect_displacement" => {
+                        crate::layers::ImportTarget::EffectDisplacement(index, effect)
+                    }
                     _ => anyhow::bail!("unknown layer import kind: {kind}"),
                 },
                 path,
             )),
+            LayerEffectSelect {
+                layer: image,
+                effect,
+            } => layer(LayerMessage::SelectEffect(image, effect)),
+            LayerEffectVisible {
+                layer: image,
+                effect,
+                visible,
+            } => layer(LayerMessage::EffectVisible(image, effect, visible)),
+            LayerMove { up } => layer(LayerMessage::Move(up)),
+            LayerRemove {} => layer(LayerMessage::Remove),
             LayerEffect { effect } => layer(LayerMessage::Effect(
                 serde_json::from_value(serde_json::Value::String(effect))
                     .context("unknown image layer effect")?,
@@ -503,13 +540,17 @@ impl App {
             "preview_ready": preview.as_ref().is_some_and(|(generation, status)| status.rendered_generation == Some(*generation) && status.error.is_none()),
             "designer_name": self.designer.draft.as_ref().map(|draft| &draft.design.name),
             "designer_selection": match self.designer.selection {
+                DesignerSelection::LayerEffect(_) => "attached_effect",
                 DesignerSelection::Image => "image",
                 DesignerSelection::Color => "color",
                 DesignerSelection::Effect(effect) => effect.key(),
             },
             "designer_layer": self.designer.layer,
+            "designer_effect": match self.designer.selection { DesignerSelection::LayerEffect(index) => Some(index), _ => None },
+            "designer_effect_count": self.designer.draft.as_ref().and_then(|draft| draft.layers.as_ref()).and_then(|stack| stack.layers.get(self.designer.layer)).map_or(0, |layer| layer.effects.len()),
             "graph_nodes": self.graph.document.as_ref().map(|doc| doc.graph.nodes.len()),
             "paint_dirty": self.designer.paint_dirty,
+            "paint_expanded": self.designer.paint_expanded,
         })
     }
     fn assert_state(&self, expected: &serde_json::Value) -> Result<()> {
@@ -1427,6 +1468,28 @@ mod tests {
             Some("invalid configuration")
         );
     }
+    #[test]
+    fn attached_effect_audit_commands_preserve_parent_and_effect_targets() {
+        use crate::layers::ImportTarget;
+        for (kind, target) in [
+            ("effect_mask", ImportTarget::EffectMask(2, 3)),
+            (
+                "effect_displacement",
+                ImportTarget::EffectDisplacement(2, 3),
+            ),
+        ] {
+            let command: Command = serde_json::from_value(serde_json::json!({
+                "command": "layer_import", "path": "source.png", "kind": kind, "index": 2, "effect": 3,
+            })).unwrap();
+            assert!(
+                matches!(command.message().unwrap(), Message::Designer(DesignerMessage::Layer(LayerMessage::ImportPath(actual, _))) if actual == target)
+            );
+        }
+        validate_state_expectations(serde_json::json!({
+            "designer_selection": "attached_effect", "designer_effect": 3, "designer_effect_count": 4, "paint_expanded": true,
+        }).as_object().unwrap()).unwrap();
+    }
+
     #[test]
     fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {
         assert!(
