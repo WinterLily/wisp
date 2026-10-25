@@ -185,6 +185,8 @@ enum Message {
     Import,
     Imported(Outcome<Option<Box<Item>>>),
     Export,
+    ExportChosen(Option<PathBuf>),
+    ExportTo(PathBuf),
     Exported(Outcome<bool>),
     RefreshMonitors,
     Monitors(Outcome<Vec<MonitorInfo>>),
@@ -423,6 +425,18 @@ impl App {
             Message::Loaded,
         )
     }
+    fn export_to(&mut self, path: PathBuf) -> Task<Message> {
+        let Some(key) = self.selected.clone() else {
+            self.status = "Choose a wallpaper to export".into();
+            return Task::none();
+        };
+        self.busy = true;
+        let library = self.library.clone();
+        work(
+            move || library.export(&key, &path).map(|()| true),
+            Message::Exported,
+        )
+    }
     fn update(&mut self, message: Message) -> Task<Message> {
         use audit_ui::CaptureOperation;
         let capture_operation = match &message {
@@ -594,32 +608,29 @@ impl App {
                     Err(error) => self.status = format!("Import failed: {error}"),
                 }
             }
-            Message::Export if !self.busy => {
-                if let Some(key) = self.selected.clone() {
-                    self.busy = true;
-                    let library = self.library.clone();
-                    return Task::perform(
-                        async move {
-                            let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_title("Export wallpaper")
-                                .add_filter("Wisp wallpaper", &["wisp"])
-                                .set_file_name("wallpaper.wisp")
-                                .save_file()
-                                .await
-                            else {
-                                return Ok(false);
-                            };
-                            let path = file.path().to_owned();
-                            tokio::task::spawn_blocking(move || library.export(&key, &path))
-                                .await
-                                .map_err(|e| e.to_string())?
-                                .map(|()| true)
-                                .map_err(|e| format!("{e:#}"))
-                        },
-                        Message::Exported,
-                    );
-                }
+            Message::Export if !self.busy && self.selected.is_some() => {
+                self.busy = true;
+                return Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Export wallpaper")
+                            .add_filter("Wisp wallpaper", &["wisp"])
+                            .set_file_name("wallpaper.wisp")
+                            .save_file()
+                            .await
+                            .map(|file| file.path().to_owned())
+                    },
+                    Message::ExportChosen,
+                );
             }
+            Message::ExportChosen(path) => {
+                self.busy = false;
+                if let Some(path) = path {
+                    return self.export_to(path);
+                }
+                self.status = "Export cancelled".into();
+            }
+            Message::ExportTo(path) if !self.busy => return self.export_to(path),
             Message::Exported(result) => {
                 self.busy = false;
                 self.status = match result {

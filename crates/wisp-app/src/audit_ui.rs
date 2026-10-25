@@ -145,6 +145,9 @@ pub(super) enum Command {
         value: bool,
     },
     LibraryReset {},
+    LibraryExport {
+        path: PathBuf,
+    },
 }
 
 const MAX_AUDIT_BYTES: u64 = 1024 * 1024;
@@ -300,6 +303,7 @@ impl Command {
             LibraryFloat { id, value } => Message::Float(id, value),
             LibraryBoolean { id, value } => Message::Boolean(id, value),
             LibraryReset {} => Message::Reset,
+            LibraryExport { path } => Message::ExportTo(path),
             _ => anyhow::bail!("audit flow command cannot be dispatched as an edit"),
         })
     }
