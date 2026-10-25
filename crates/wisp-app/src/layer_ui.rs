@@ -39,6 +39,9 @@ pub(in crate::ui) enum LayerMessage {
     Brush(f32),
     Tool(PaintTool),
     Flow(f32),
+    WandTolerance(u8),
+    WandAllMatching(bool),
+    WandSelect([f32; 2]),
     LassoPoint([f32; 2]),
     LassoFinish,
     LassoCancel,
@@ -53,6 +56,8 @@ impl App {
         self.designer.lasso_vertices.clear();
         self.designer.paint_session += 1;
         self.designer.paint_source = None;
+        self.designer.paint_source_pixels = None;
+        self.designer.paint_dimensions = [0, 0];
         self.designer.paint_mask = None;
         self.designer.paint_pixels = None;
         self.designer.paint_asset = None;
@@ -64,12 +69,18 @@ impl App {
                 && let Ok(source) = wisp_compiler::decode_source_image(&a.bytes)
             {
                 self.designer.paint_dimensions = [source.width(), source.height()];
-                let source = source.thumbnail(2048, 2048).into_rgba8();
+                let source = if source.width() > 2048 || source.height() > 2048 {
+                    source.thumbnail(2048, 2048)
+                } else {
+                    source
+                }
+                .into_rgba8();
                 self.designer.paint_source = Some(image::Handle::from_rgba(
                     source.width(),
                     source.height(),
-                    source.into_raw(),
+                    source.as_raw().clone(),
                 ));
+                self.designer.paint_source_pixels = Some(source);
             }
             if let Some(m) = &l.mask
                 && let Some(a) = s.assets.get(&m.asset)
@@ -155,6 +166,9 @@ impl App {
                 | Brush(_)
                 | Tool(_)
                 | Flow(_)
+                | WandTolerance(_)
+                | WandAllMatching(_)
+                | WandSelect(_)
                 | Erase(_)
                 | Expand(_)
                 | LassoPoint(_)
@@ -228,6 +242,8 @@ impl App {
                 self.designer.paint_session += 1;
             }
             Flow(value) => self.designer.airbrush_flow = value.clamp(0.01, 0.5),
+            WandTolerance(value) => self.designer.magic_wand.tolerance = value,
+            WandAllMatching(value) => self.designer.magic_wand.all_matching = value,
             LassoPoint(point) => {
                 if self.designer.paint_tool == PaintTool::PolygonalLasso
                     && point
@@ -241,15 +257,13 @@ impl App {
             LassoUndo => {
                 self.designer.lasso_vertices.pop();
             }
-            Paint(..) | LassoFinish => {
+            Paint(..) | LassoFinish | WandSelect(_) => {
                 let flow = self.designer.airbrush_flow();
                 if let Some(pixels) = &mut self.designer.paint_pixels {
                     let [w, h] = self.designer.paint_dimensions;
                     let value = if self.designer.erase { 0 } else { 255 };
                     let result = match message {
-                        Paint(from, to)
-                            if self.designer.paint_tool != PaintTool::PolygonalLasso =>
-                        {
+                        Paint(from, to) if self.designer.paint_tool.is_brush() => {
                             crate::painting::paint_brush(
                                 pixels,
                                 from,
@@ -270,6 +284,19 @@ impl App {
                                 value,
                             )
                         }
+                        WandSelect(point) if self.designer.paint_tool == PaintTool::MagicWand => {
+                            let Some(source) = &self.designer.paint_source_pixels else {
+                                self.status = "Magic wand needs a source image.".into();
+                                return Task::none();
+                            };
+                            crate::painting::fill_magic_wand(
+                                pixels,
+                                source,
+                                point,
+                                self.designer.magic_wand,
+                                value,
+                            )
+                        }
                         _ => return Task::none(),
                     };
                     let region = match result {
@@ -279,6 +306,9 @@ impl App {
                             return Task::none();
                         }
                     };
+                    if region == [0; 4] {
+                        return Task::none();
+                    }
                     self.designer.lasso_vertices.clear();
                     self.designer.paint_dirty = true;
                     self.designer.paint_pending = true;
@@ -592,7 +622,7 @@ impl App {
         )]
         .spacing(12)
         .align_y(iced::Center);
-        if self.designer.paint_tool != PaintTool::PolygonalLasso {
+        if self.designer.paint_tool.is_brush() {
             tools = tools.push(text("Size").size(12)).push(
                 slider(0.005..=0.25, self.designer.brush.max(0.005), move |value| {
                     action(Brush(value))
@@ -614,6 +644,21 @@ impl App {
                     );
             }
         }
+        if self.designer.paint_tool == PaintTool::MagicWand {
+            tools = tools
+                .push(text(format!("Tolerance {}", self.designer.magic_wand.tolerance)).size(12))
+                .push(
+                    slider(0..=255, self.designer.magic_wand.tolerance, move |value| {
+                        action(WandTolerance(value))
+                    })
+                    .width(140),
+                )
+                .push(
+                    checkbox(self.designer.magic_wand.all_matching)
+                        .label("All matching colors")
+                        .on_toggle(move |value| action(WandAllMatching(value))),
+                );
+        }
         let mut controls = column![tools].spacing(8).padding([0, 8]);
         if self.designer.paint_tool == PaintTool::PolygonalLasso {
             controls = controls
@@ -622,6 +667,9 @@ impl App {
                     button("Fill polygon").on_press_maybe((self.designer.lasso_vertices.len() >= 3).then_some(action(LassoFinish))),
                     button("Cancel polygon").on_press_maybe((!self.designer.lasso_vertices.is_empty()).then_some(action(LassoCancel)))
                 ].spacing(8));
+        }
+        if self.designer.paint_tool == PaintTool::MagicWand {
+            controls = controls.push(text("Click the source to select a connected color region. Increase tolerance to include similar colors; use Erase to subtract.").size(11));
         }
         controls.into()
     }
@@ -785,6 +833,17 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             .position_in(bounds)
             .filter(|p| rect.contains(*p))
             .map(|p| [(p.x - rect.x) / rect.width, (p.y - rect.y) / rect.height]);
+        if self.designer.paint_tool == PaintTool::MagicWand {
+            return match event {
+                canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    emit(LayerMessage::WandSelect(p?))
+                }
+                canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    Some(Action::request_redraw())
+                }
+                _ => None,
+            };
+        }
         if self.designer.paint_tool == PaintTool::PolygonalLasso {
             return match event {
                 canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -903,6 +962,23 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                 }
             }
         } else if let Some(p) = cursor.position_in(bounds).filter(|p| rect.contains(*p)) {
+            if self.designer.paint_tool == PaintTool::MagicWand {
+                let crosshair = Path::new(|builder| {
+                    builder.move_to(Point::new(p.x - 7., p.y));
+                    builder.line_to(Point::new(p.x + 7., p.y));
+                    builder.move_to(Point::new(p.x, p.y - 7.));
+                    builder.line_to(Point::new(p.x, p.y + 7.));
+                });
+                f.stroke(
+                    &crosshair,
+                    Stroke::default().with_color(Color::BLACK).with_width(3.),
+                );
+                f.stroke(
+                    &crosshair,
+                    Stroke::default().with_color(color).with_width(1.5),
+                );
+                return vec![f.into_geometry()];
+            }
             f.stroke(
                 &Path::circle(
                     p,
@@ -920,6 +996,71 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wand_clicks_map_to_source_coordinates_and_ignore_drags_and_letterboxing() {
+        use canvas::Program;
+        let designer = Designer {
+            paint_tool: PaintTool::MagicWand,
+            paint_dimensions: [400, 200],
+            ..Default::default()
+        };
+        let mut state = PaintState::default();
+        let press = canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        assert!(
+            canvas_message(
+                &designer,
+                &mut state,
+                press.clone(),
+                Some(Point::new(100., 25.))
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            canvas_message(
+                &designer,
+                &mut state,
+                press.clone(),
+                Some(Point::new(50., 75.))
+            ),
+            Some(LayerMessage::WandSelect([0.25, 0.25]))
+        ));
+        assert!(state.last.is_none() && state.next_spray.is_none());
+        assert!(
+            canvas_message(
+                &designer,
+                &mut state,
+                canvas::Event::Mouse(mouse::Event::CursorMoved {
+                    position: Point::new(70., 75.)
+                }),
+                Some(Point::new(70., 75.))
+            )
+            .is_none()
+        );
+        assert!(
+            canvas_message(
+                &designer,
+                &mut state,
+                canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                None
+            )
+            .is_none()
+        );
+        let blocked = MaskCanvas {
+            designer: &designer,
+            enabled: false,
+        };
+        assert!(
+            blocked
+                .update(
+                    &mut state,
+                    &press,
+                    Rectangle::new(Point::ORIGIN, iced::Size::new(200., 200.)),
+                    mouse::Cursor::Available(Point::new(50., 75.))
+                )
+                .is_none()
+        );
+    }
 
     fn canvas_message(
         designer: &Designer,
@@ -1172,6 +1313,90 @@ mod tests {
 #[cfg(test)]
 mod live_paint_tests {
     use super::*;
+
+    #[test]
+    fn magic_wand_uses_source_colors_preserves_edits_and_saves_the_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("regions.png");
+        ::image::RgbaImage::from_fn(100, 50, |x, _| {
+            ::image::Rgba([if x < 30 || x >= 70 { 180 } else { 20 }, 40, 60, 255])
+        })
+        .save(&source)
+        .unwrap();
+        let mut draft = Draft::from_image(&source).unwrap();
+        draft.enable_layers().blank_mask(0, false).unwrap();
+        let library = Library::open(Some(dir.path().join("library"))).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.designer.draft = Some(Arc::new(draft));
+        app.refresh_painter();
+        assert_eq!(
+            app.designer
+                .paint_source_pixels
+                .as_ref()
+                .unwrap()
+                .dimensions(),
+            (100, 50)
+        );
+        app.busy = true;
+        app.designer.compiling = true;
+        let _ = app.layer_update(LayerMessage::Tool(PaintTool::MagicWand));
+        let _ = app.layer_update(LayerMessage::WandTolerance(0));
+        let _ = app.layer_update(LayerMessage::WandSelect([0.1, 0.5]));
+        let pixel = |app: &App, x| {
+            app.designer
+                .paint_pixels
+                .as_ref()
+                .unwrap()
+                .get_pixel(x, 512)
+                .0[0]
+        };
+        assert_eq!(
+            (pixel(&app, 100), pixel(&app, 512), pixel(&app, 900)),
+            (255, 0, 0)
+        );
+        assert!(app.designer.paint_dirty && app.designer.paint_pending && app.designer.dirty);
+        assert!(app.designer.paint_overlay[(512 * 1024 + 100) * 4 + 3] > 0);
+        let _ = app.layer_update(LayerMessage::WandAllMatching(true));
+        let _ = app.layer_update(LayerMessage::WandSelect([0.1, 0.5]));
+        assert_eq!(
+            (pixel(&app, 100), pixel(&app, 512), pixel(&app, 900)),
+            (255, 0, 255)
+        );
+        let _ = app.layer_update(LayerMessage::WandAllMatching(false));
+        let _ = app.layer_update(LayerMessage::Erase(true));
+        let _ = app.layer_update(LayerMessage::WandSelect([0.1, 0.5]));
+        assert_eq!(
+            (pixel(&app, 100), pixel(&app, 512), pixel(&app, 900)),
+            (0, 0, 255)
+        );
+        let expected = app.designer.paint_pixels.clone().unwrap();
+        let _ = app.layer_update(LayerMessage::Paint([0.5; 2], [0.5; 2]));
+        let _ = app.layer_update(LayerMessage::WandSelect([f32::NAN, 0.]));
+        assert_eq!(app.designer.paint_pixels.as_ref(), Some(&expected));
+        let asset = app.designer.paint_asset.clone().unwrap();
+        app.flush_paint().unwrap();
+        let saved = dir.path().join("saved");
+        app.designer
+            .draft
+            .as_ref()
+            .unwrap()
+            .save_project(&saved)
+            .unwrap();
+        let reopened = Draft::open_project(&saved).unwrap();
+        assert_eq!(
+            ::image::load_from_memory(&reopened.layers.unwrap().assets[&asset].bytes)
+                .unwrap()
+                .into_luma8(),
+            expected
+        );
+        let _ = app.layer_update(LayerMessage::Tool(PaintTool::HardRound));
+        let _ = app.layer_update(LayerMessage::WandSelect([0.5; 2]));
+        assert_eq!(app.designer.paint_pixels.as_ref(), Some(&expected));
+        app.designer.draft = None;
+        app.refresh_painter();
+        assert!(app.designer.paint_source_pixels.is_none());
+        assert_eq!(app.designer.paint_dimensions, [0, 0]);
+    }
 
     #[test]
     fn additional_tools_preserve_live_edits_cancel_safely_and_survive_project_reopen() {
