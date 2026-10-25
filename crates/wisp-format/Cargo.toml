@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+wisp-io.workspace = true
 anyhow.workspace = true
 semver.workspace = true
 serde.workspace = true

@@ -3,8 +3,6 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs::File,
-    io::Read,
     path::{Component, Path},
 };
 use wisp_format::Manifest;
@@ -31,27 +29,10 @@ pub struct ProjectAsset {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    // Reject FIFOs/devices before open, which could otherwise block indefinitely.
-    ensure!(
-        std::fs::metadata(path)?.is_file(),
-        "project input must be a regular file: {}",
-        path.display()
-    );
-    let file = File::open(path).with_context(|| format!("could not open {}", path.display()))?;
-    ensure!(
-        file.metadata()?.is_file(),
-        "project input must be a regular file: {}",
-        path.display()
-    );
-    let mut bytes = vec![];
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() as u64 <= limit,
-        "project input exceeds byte limit: {}",
-        path.display()
-    );
-    Ok(bytes)
+    wisp_io::read_bounded(path, limit)
+        .with_context(|| format!("could not read project input {}", path.display()))
 }
+
 fn contained(root: &Path, path: &str) -> Result<std::path::PathBuf> {
     ensure!(
         !path.contains('\\')

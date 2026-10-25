@@ -3,8 +3,6 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::Read,
     path::{Path, PathBuf},
 };
 use wisp_format::{Package, PackageLimits, ParameterValue};
@@ -74,14 +72,8 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 1024 * 1024,
-            "assignment config exceeds 1 MiB"
-        );
+        let bytes = wisp_io::read_bounded(path, 1024 * 1024)
+            .context("could not read assignment config (maximum 1 MiB)")?;
         let mut config: Self =
             serde_json::from_slice(&bytes).context("invalid assignment config")?;
         ensure!(config.outputs.len() <= 64, "too many output assignments");

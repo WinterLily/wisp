@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -84,18 +84,7 @@ struct Args {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    let mut data = Vec::new();
-    File::open(path)
-        .with_context(|| format!("could not open {}", path.display()))?
-        .take(limit + 1)
-        .read_to_end(&mut data)?;
-    ensure!(
-        data.len() as u64 <= limit,
-        "{} exceeds its {} byte input limit",
-        path.display(),
-        limit
-    );
-    Ok(data)
+    wisp_io::read_bounded(path, limit)
 }
 
 fn main() -> Result<()> {
