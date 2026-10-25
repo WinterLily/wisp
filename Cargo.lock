@@ -4220,6 +4220,7 @@ dependencies = [
  "wisp-compiler",
  "wisp-format",
  "wisp-host",
+ "wisp-io",
  "wisp-ir",
  "wisp-runtime",
 ]
@@ -4247,6 +4248,7 @@ dependencies = [
  "serde_json",
  "wgpu",
  "wisp-format",
+ "wisp-io",
  "wisp-ir",
  "wisp-runtime",
 ]
@@ -4259,6 +4261,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "wisp-io",
  "zip",
 ]
 
@@ -4269,8 +4272,10 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tempfile",
  "wisp-audio",
  "wisp-format",
+ "wisp-io",
  "wisp-runtime",
 ]
 
@@ -4310,6 +4315,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-io"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "wisp-ir"
 version = "0.1.0"
 dependencies = [
@@ -4327,10 +4341,12 @@ dependencies = [
  "image",
  "pollster",
  "serde_json",
+ "tempfile",
  "wgpu",
  "winit",
  "wisp-audio",
  "wisp-format",
+ "wisp-io",
  "wisp-runtime",
 ]
 
@@ -4366,6 +4382,7 @@ dependencies = [
  "clap",
  "fs2",
  "wisp-audio",
+ "wisp-compiler",
  "wisp-host",
  "wisp-host-wayland",
  "wisp-host-windows",
