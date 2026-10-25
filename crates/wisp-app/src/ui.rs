@@ -10,6 +10,9 @@ mod graph_ui;
 mod icons;
 #[path = "motion.rs"]
 mod motion;
+#[cfg(test)]
+#[path = "slider_tests.rs"]
+mod slider_tests;
 #[path = "style.rs"]
 mod style;
 use crate::{

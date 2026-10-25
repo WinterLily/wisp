@@ -28,7 +28,10 @@ fn fused_graph_matches_handwritten_shader_and_live_parameters() {
                 .unwrap();
         let shader=Shader::with_bindings(r#"
 fn wallpaper(uv: vec2<f32>) -> vec4<f32> {
-    let shifted = uv + (globals.mouse - vec2<f32>(0.5)) * params.p0;
+    let strength = params.p0;
+    let zoom = 1.0 + abs(strength);
+    let shifted = vec2<f32>(0.5) + (uv - vec2<f32>(0.5)
+        + (clamp(globals.mouse, vec2<f32>(0.0), vec2<f32>(1.0)) - vec2<f32>(0.5)) * strength) / zoom;
     let image = textureSample(background, background_sampler, shifted);
     let bright = vec4<f32>(image.rgb * params.p1, image.a);
     let tinted = bright * params.p2;
@@ -626,4 +629,122 @@ fn layer_blends_match_straight_alpha_reference_and_transforms_clip() {
             }
         }
     });
+}
+
+#[test]
+#[ignore = "requires a working graphics adapter"]
+fn parallax_keeps_image_detail_at_every_edge_and_zero_strength_preserves_framing() {
+    let pixels =
+        image::RgbaImage::from_fn(256, 256, |x, y| image::Rgba([x as u8, y as u8, 128, 255]));
+    let mut encoded = Cursor::new(vec![]);
+    pixels
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let graph: Graph = serde_json::from_value(serde_json::json!({
+        "version": 1, "output": "output",
+        "parameters": [{"id":"strength","default":{"type":"float","value":0.0},"min":-1,"max":1}],
+        "nodes": [
+            {"id":"uv","op":{"type":"uv"}},
+            {"id":"strength","op":{"type":"parameter","parameter":"strength"}},
+            {"id":"parallax","op":{"type":"parallax","uv":"uv","strength":"strength"}},
+            {"id":"image","op":{"type":"image","asset":"source","uv":"parallax"}},
+            {"id":"output","op":{"type":"output","color":"image"}}
+        ]
+    }))
+    .unwrap();
+    let assets = BTreeMap::from([(
+        "source".into(),
+        Asset {
+            extension: "png".into(),
+            bytes: encoded.into_inner(),
+        },
+    )]);
+    let manifest = Manifest {
+        format_version: 1,
+        id: "test.parallax".into(),
+        name: "Parallax".into(),
+        author: "Test".into(),
+        description: String::new(),
+        tags: vec![],
+        preview: None,
+        program: "program.json".into(),
+        minimum_wisp_version: "0.1.0".into(),
+        gpu_profile: 1,
+    };
+    let compiled = compile(
+        &graph.check().unwrap(),
+        &assets,
+        manifest,
+        &Default::default(),
+    )
+    .unwrap();
+    let wallpaper = Wallpaper::from_package(&compiled.package).unwrap();
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+    let gpu = pollster::block_on(Gpu::new(&instance, None)).unwrap();
+    let mut renderer = pollster::block_on(Renderer::from_wallpaper(
+        &gpu,
+        &wallpaper,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ))
+    .unwrap();
+    let shader = Shader::new("fn wallpaper(uv: vec2<f32>) -> vec4<f32> { return textureSample(background, background_sampler, uv); }").unwrap();
+    let reference = pollster::block_on(Renderer::new(
+        &gpu,
+        &shader,
+        &wallpaper.images()[0],
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ))
+    .unwrap();
+    for (width, height) in [(64, 48), (48, 64)] {
+        let mut globals = Globals::new(width, height);
+        let original = reference
+            .render_rgba(&gpu, width, height, &globals)
+            .unwrap();
+        for strength in [0., 0.03, 0.15, 1., -0.15, -1.] {
+            renderer
+                .set_parameter(&gpu.queue, "strength", ParameterValue::Float(strength))
+                .unwrap();
+            globals.mouse = [0.5, 0.5];
+            let centered = renderer.render_rgba(&gpu, width, height, &globals).unwrap();
+            for mouse in [[0., 0.], [0., 1.], [1., 0.], [1., 1.], [0.5, 0.5]] {
+                globals.mouse = mouse;
+                let frame = renderer.render_rgba(&gpu, width, height, &globals).unwrap();
+                if strength == 0. {
+                    assert_eq!(frame, original, "zero strength changed the image framing");
+                } else if mouse != [0.5, 0.5] {
+                    assert_ne!(
+                        frame, centered,
+                        "parallax no longer responds to the pointer"
+                    );
+                }
+                // A coordinate gradient exposes stretched border texels as repeated rows or columns.
+                for y in 0..height as usize {
+                    for x in 0..width as usize {
+                        let index = (y * width as usize + x) * 4;
+                        assert_eq!(frame[index + 3], 255);
+                        if x > 0 {
+                            assert!(
+                                frame[index] > frame[index - 4],
+                                "horizontal edge stretch: strength {strength}, mouse {mouse:?}, pixel {x},{y}"
+                            );
+                        }
+                        if y > 0 {
+                            assert!(
+                                frame[index + 1] > frame[index + 1 - width as usize * 4],
+                                "vertical edge stretch: strength {strength}, mouse {mouse:?}, pixel {x},{y}"
+                            );
+                        }
+                    }
+                }
+            }
+            globals.mouse = [0., 1.];
+            let corner = renderer.render_rgba(&gpu, width, height, &globals).unwrap();
+            globals.mouse = [-2., 3.];
+            assert_eq!(
+                corner,
+                renderer.render_rgba(&gpu, width, height, &globals).unwrap(),
+                "pointer outside the viewport exceeded the reserved image area"
+            );
+        }
+    }
 }
