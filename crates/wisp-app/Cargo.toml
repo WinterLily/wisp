@@ -24,3 +24,6 @@ fs2.workspace = true
 directories.workspace = true
 rfd.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+iced_wgpu = { version = "0.14", features = ["geometry", "image"] }
