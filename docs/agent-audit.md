@@ -5,7 +5,7 @@ disposable Linux desktop:
 
 ```sh
 cargo build --workspace
-python3 tools/audit.py --compositor niri --output-dir agents/native-audit
+python3 tools/audit.py --compositor niri --integration-tests --output-dir agents/native-audit
 ```
 
 `niri` starts a nested compositor on the caller's Wayland or X11 display. It does
@@ -19,7 +19,7 @@ backend. The native renderer still needs a GPU or software implementation.
 Headless CI uses Sway with the wlroots headless backend and Pixman compositor:
 
 ```sh
-python3 tools/audit.py --compositor sway --output-dir agents/ci-audit
+python3 tools/audit.py --compositor sway --integration-tests --output-dir agents/ci-audit
 ```
 
 Install `sway`, `grim`, `wtype`, Mesa Vulkan/EGL drivers and the project's native
@@ -32,7 +32,8 @@ configuration, or physical monitor is needed.
 Pass `--build` to build first, `--bin-dir target/release` to use other binaries,
 or `--timeout 900` to raise the overall deadline, including an optional build.
 `--build --bin-dir target/release` builds the release profile. Without `--build`,
-the runner uses the four existing binaries and never invokes Cargo.
+the runner uses the four existing binaries. Cargo is invoked only with `--build`
+or `--integration-tests`.
 
 Each invocation creates a fresh `run-*` directory below `--output-dir`. It
 contains private XDG directories, per-workflow libraries, compositor config,
@@ -93,8 +94,10 @@ The focused harness failure tests need no compositor:
 python3 -m unittest discover -s tools -p 'test_audit.py' -v
 ```
 
-The independent Rust daemon integration test also needs a disposable desktop and
-built `wispd`; do not invoke it against an everyday desktop:
+Pass `--integration-tests` to run the independent Rust daemon integration test
+inside the runner's disposable desktop, using the same target directory and
+profile as `--bin-dir`. CI enables this option. The test also needs built `wispd`;
+do not invoke it against an everyday desktop:
 
 ```sh
 cargo test -p wisp --test daemon -- --ignored

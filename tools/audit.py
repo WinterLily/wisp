@@ -329,8 +329,44 @@ class Audit:
         self.app("paused", ["--import", ROOT / "examples/graph-fused"], [
             wait(), command("pause_preview"), assertion(paused=True), screenshot(paused),
         ])
+        checkpoint = self.output / "combined-checkpoint.png"
+        final = self.output / "combined-final.png"
+        sequence = self.output / "combined-commands.json"
+        atomic_json(sequence, [screenshot(checkpoint), command("finish")])
+        log = self.processes.run(
+            "combined-captures",
+            [self.binary("wisp"), "--data-dir", self.output / "combined-library",
+             "--screenshot", final, "--audit-commands", sequence],
+            self.environment,
+        )
+        completion(log, "combined captures")
+        verify_png(checkpoint)
+        verify_png(final)
+
+        failure = self.output / "terminal-error.png"
+        atomic_json(sequence, [command("finish")])
+        log = self.processes.run(
+            "terminal-error",
+            [self.binary("wisp"), "--data-dir", self.output / "terminal-error-library",
+             "--create", self.output / "absent-terminal-image.png",
+             "--screenshot", failure, "--audit-commands", sequence],
+            self.environment, expected=1,
+        )
+        require("AUDIT_FAILED" in log and "AUDIT_COMPLETE" not in log,
+                "terminal capture lost the startup failure verdict")
+        verify_png(failure)
+
+        atomic_json(sequence, [command("finish"), assertion(page="impossible"), command("finish")])
+        log = self.processes.run(
+            "early-finish",
+            [self.binary("wisp"), "--data-dir", self.output / "early-finish-library",
+             "--audit-commands", sequence], self.environment, expected=1,
+        )
+        require("exactly one finish at the end" in log and "AUDIT_COMPLETE" not in log,
+                "an early finish bypassed later assertions")
 
     def library(self):
+        package = self.output / "library-export.wisp"
         self.app("library", ["--import", ROOT / "examples/graph-blur"], [
             wait(), assertion(page="library", preview_ready=True, parameter_errors=0),
             command("library_float", id="brightness", value=1.5),
@@ -342,7 +378,13 @@ class Audit:
             screenshot(self.output / "library-invalid.png"),
             command("library_reset"), assertion(parameter_errors=0),
             screenshot(self.output / "library-reset.png"),
+            command("library_export", path=str(package)),
+            assertion(status_contains="Wallpaper exported"),
+            command("library_export", path=str(package)),
+            assertion(status_contains="could not commit application data"),
         ])
+        self.processes.run("library-export-check", [self.binary("wisp-preview"), "--package",
+                                                    package, "--check"], self.environment)
         normal = self.output / "keyboard-normal.png"
         focused = self.output / "keyboard-focus.png"
         restored = self.output / "keyboard-restored.png"
@@ -525,6 +567,14 @@ class Audit:
         atomic_json(directory / "stopped.json", stopped)
         self.processes.record("workflow", name="daemon", state=stopped)
 
+    def daemon_integration(self):
+        args = ["cargo", "test", "--locked", "-p", "wisp", "--test", "daemon",
+                "--target-dir", self.args.bin_dir.parent]
+        if self.args.bin_dir.name == "release":
+            args.append("--release")
+        args.extend(["--", "--ignored"])
+        self.processes.run("daemon-integration", args, self.environment, timeout=180)
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, epilog=(
@@ -539,14 +589,16 @@ def parse_args(argv=None):
     parser.add_argument("--bin-dir", type=Path, default=ROOT / "target/debug",
                         help="directory containing prebuilt workspace binaries (default: target/debug)")
     parser.add_argument("--build", action="store_true", help="build workspace before the audit")
+    parser.add_argument("--integration-tests", action="store_true",
+                        help="run the Rust owned-daemon integration test inside the disposable desktop")
     parser.add_argument("--timeout", type=int, default=600,
                         help="overall deadline in seconds, including optional build (default: 600)")
     args = parser.parse_args(argv)
     if args.timeout < 30:
         parser.error("--timeout must be at least 30 seconds")
     args.bin_dir = args.bin_dir.resolve()
-    if args.build and args.bin_dir.name not in ("debug", "release"):
-        parser.error("--build requires --bin-dir to end in debug or release")
+    if (args.build or args.integration_tests) and args.bin_dir.name not in ("debug", "release"):
+        parser.error("--build/--integration-tests require --bin-dir to end in debug or release")
     return args
 
 
@@ -582,6 +634,10 @@ def main(argv=None):
             print(f"Running {name}…", flush=True)
             processes.alive(audit.desktop)
             getattr(audit, name)()
+        if args.integration_tests:
+            print("Running owned-daemon integration…", flush=True)
+            processes.alive(audit.desktop)
+            audit.daemon_integration()
         result["passed"] = True
     except (AuditFailure, OSError, ValueError, KeyError) as error:
         result["error"] = str(error)
