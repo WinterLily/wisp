@@ -111,7 +111,7 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
             );
             app.pending_design = options.create.clone();
             app.pending_graph = options.graph.clone();
-            app.screenshot = options.screenshot.clone();
+            app.final_screenshot = options.screenshot.clone();
             app.screenshot_delay = options.screenshot_delay;
             app.exit_failure = app_exit_failure.clone();
             app.audit_commands = audit_commands.clone();
@@ -266,12 +266,10 @@ struct App {
     focused: bool,
     last_tick: Instant,
     frame_limit: Option<u64>,
-    screenshot: Option<PathBuf>,
+    final_screenshot: Option<PathBuf>,
     started: Instant,
     screenshot_delay: Duration,
-    capturing: bool,
-    capture_started: Instant,
-    capture_exit: bool,
+    active_capture: Option<audit_ui::Capture>,
     startup_error: Option<String>,
     exit_failure: Arc<Mutex<Option<String>>>,
     audit_commands: std::collections::VecDeque<audit_ui::Command>,
@@ -360,12 +358,10 @@ impl App {
             focused: true,
             last_tick: Instant::now(),
             frame_limit: frames,
-            screenshot: None,
+            final_screenshot: None,
             started: Instant::now(),
             screenshot_delay: Duration::from_secs(1),
-            capturing: false,
-            capture_started: Instant::now(),
-            capture_exit: true,
+            active_capture: None,
             startup_error: config_result_error,
             exit_failure: Arc::new(Mutex::new(None)),
             audit_commands: Default::default(),
@@ -822,38 +818,42 @@ impl App {
             }
             Message::AuditPoll => return self.audit_poll(),
             Message::Screenshot(screenshot) => {
-                self.capturing = false;
-                if self.capture_exit
+                let Some(capture) = self.active_capture.take() else {
+                    return Task::none();
+                };
+                if capture.completion != audit_ui::CaptureCompletion::Checkpoint
                     && let Some(error) = self.capture_error()
                 {
+                    eprintln!("AUDIT_FAILED: {error}");
                     *self.exit_failure.lock().unwrap() = Some(error);
                 }
-                if let Some(path) = self.screenshot.take() {
-                    let result = (|| -> Result<()> {
-                        use ::image::ImageEncoder;
-                        let parent = path
-                            .parent()
-                            .filter(|p| !p.as_os_str().is_empty())
-                            .unwrap_or(std::path::Path::new("."));
-                        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-                        ::image::codecs::png::PngEncoder::new(&mut file).write_image(
-                            &screenshot.rgba,
-                            screenshot.size.width,
-                            screenshot.size.height,
-                            ::image::ExtendedColorType::Rgba8,
-                        )?;
-                        file.persist_noclobber(&path)?;
-                        Ok(())
-                    })();
-                    if let Err(error) = result {
-                        eprintln!("AUDIT_FAILED: Could not save screenshot: {error:#}");
-                        *self.exit_failure.lock().unwrap() =
-                            Some(format!("Could not save screenshot: {error:#}"));
-                        return iced::exit();
-                    }
-                    println!("Saved application screenshot: {}", path.display());
+                let path = capture.path;
+                let result = (|| -> Result<()> {
+                    use ::image::ImageEncoder;
+                    let parent = path
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(std::path::Path::new("."));
+                    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                    ::image::codecs::png::PngEncoder::new(&mut file).write_image(
+                        &screenshot.rgba,
+                        screenshot.size.width,
+                        screenshot.size.height,
+                        ::image::ExtendedColorType::Rgba8,
+                    )?;
+                    file.persist_noclobber(&path)?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    eprintln!("AUDIT_FAILED: Could not save screenshot: {error:#}");
+                    *self.exit_failure.lock().unwrap() =
+                        Some(format!("Could not save screenshot: {error:#}"));
+                    return iced::exit();
                 }
-                if self.capture_exit {
+                println!("Saved application screenshot: {}", path.display());
+                if capture.completion == audit_ui::CaptureCompletion::Exit
+                    || self.exit_failure.lock().unwrap().is_some()
+                {
                     return iced::exit();
                 }
             }
@@ -931,7 +931,8 @@ impl App {
             iced::event::listen().map(Message::Event),
         ];
         if self.frame_limit.is_some()
-            || self.screenshot.is_some()
+            || self.final_screenshot.is_some()
+            || self.active_capture.is_some()
             || !self.audit_commands.is_empty()
         {
             subscriptions

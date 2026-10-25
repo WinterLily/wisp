@@ -78,6 +78,9 @@ pub(super) enum Command {
         to: [f32; 2],
     },
     LayerStrokeEnd {},
+    LayerErase {
+        value: bool,
+    },
     LayerExpand {
         value: bool,
     },
@@ -158,6 +161,15 @@ pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
         !commands.is_empty() && commands.len() <= MAX_AUDIT_COMMANDS,
         "audit requires 1–1024 commands"
     );
+    ensure!(
+        matches!(commands.back(), Some(Command::Finish {}))
+            && commands
+                .iter()
+                .filter(|command| matches!(command, Command::Finish {}))
+                .count()
+                == 1,
+        "audit sequence must contain exactly one finish at the end"
+    );
     let mut total_wait = 0u64;
     for command in &commands {
         match command {
@@ -192,10 +204,6 @@ pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
             _ => {}
         }
     }
-    ensure!(
-        matches!(commands.back(), Some(Command::Finish {})),
-        "audit sequence must end with finish"
-    );
     Ok(commands)
 }
 
@@ -263,6 +271,7 @@ impl Command {
             )),
             LayerPaint { from, to } => layer(LayerMessage::Paint(from, to)),
             LayerStrokeEnd {} => layer(LayerMessage::StrokeEnd),
+            LayerErase { value } => layer(LayerMessage::Erase(value)),
             LayerExpand { value } => layer(LayerMessage::Expand(value)),
             GraphNew {} => graph(GraphMessage::New),
             GraphPanel { value } => graph(GraphMessage::Panel(match value.as_str() {
@@ -296,6 +305,19 @@ impl Command {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaptureCompletion {
+    Checkpoint,
+    AuditFinish,
+    Exit,
+}
+
+pub(super) struct Capture {
+    pub(super) path: PathBuf,
+    pub(super) started: Instant,
+    pub(super) completion: CaptureCompletion,
+}
+
 impl App {
     fn active_preview(&self) -> Option<&Preview> {
         match self.page {
@@ -310,10 +332,12 @@ impl App {
                 .and_then(|preview| preview.status.lock().unwrap().error.clone())
         })
     }
-    fn capture(&mut self, exit: bool) -> Task<Message> {
-        self.capturing = true;
-        self.capture_started = Instant::now();
-        self.capture_exit = exit;
+    fn capture(&mut self, path: PathBuf, completion: CaptureCompletion) -> Task<Message> {
+        self.active_capture = Some(Capture {
+            path,
+            started: Instant::now(),
+            completion,
+        });
         iced::window::latest()
             .and_then(iced::window::screenshot)
             .map(Message::Screenshot)
@@ -322,8 +346,10 @@ impl App {
         let error = error.into();
         eprintln!("AUDIT_FAILED: {error}");
         *self.exit_failure.lock().unwrap() = Some(error);
-        if self.screenshot.is_some() && !self.capturing {
-            self.capture(true)
+        if self.active_capture.is_none()
+            && let Some(path) = self.final_screenshot.take()
+        {
+            self.capture(path, CaptureCompletion::Exit)
         } else {
             iced::exit()
         }
@@ -378,8 +404,8 @@ impl App {
         Ok(())
     }
     pub(super) fn audit_poll(&mut self) -> Task<Message> {
-        if self.capturing {
-            if self.capture_started.elapsed() > Duration::from_secs(10) {
+        if let Some(capture) = &self.active_capture {
+            if capture.started.elapsed() > Duration::from_secs(10) {
                 return self.fail_audit("application screenshot timed out");
             }
             return Task::none();
@@ -399,8 +425,8 @@ impl App {
             {
                 println!("Rendered {} live preview frames", self.frame_limit.unwrap());
                 self.frame_limit = None;
-                return if self.screenshot.is_some() {
-                    self.capture(true)
+                return if let Some(path) = self.final_screenshot.take() {
+                    self.capture(path, CaptureCompletion::Exit)
                 } else {
                     iced::exit()
                 };
@@ -428,8 +454,7 @@ impl App {
                         Some(Instant::now() + Duration::from_millis(milliseconds))
                 }
                 Command::Screenshot { path } => {
-                    self.screenshot = Some(path);
-                    return self.capture(false);
+                    return self.capture(path, CaptureCompletion::Checkpoint);
                 }
                 Command::Assert { state } => {
                     if let Err(error) = self.assert_state(&state) {
@@ -445,9 +470,9 @@ impl App {
                         println!("Rendered {frames} live preview frames");
                         self.frame_limit = None;
                     }
-                    if self.screenshot.is_some() {
+                    if let Some(path) = self.final_screenshot.take() {
                         self.audit_commands.push_front(Command::Finish {});
-                        return self.capture(false);
+                        return self.capture(path, CaptureCompletion::AuditFinish);
                     }
                     println!("AUDIT_COMPLETE {}", self.state());
                     return iced::exit();
@@ -460,7 +485,7 @@ impl App {
             return Task::none();
         }
         if self.frame_limit.is_none()
-            && self.screenshot.is_some()
+            && self.final_screenshot.is_some()
             && self.started.elapsed() >= self.screenshot_delay
             && (!self.busy || timed_out)
         {
@@ -471,7 +496,8 @@ impl App {
                 *self.exit_failure.lock().unwrap() =
                     Some(format!("startup timed out: {}", self.status));
             }
-            return self.capture(true);
+            let path = self.final_screenshot.take().unwrap();
+            return self.capture(path, CaptureCompletion::Exit);
         }
         Task::none()
     }
@@ -490,6 +516,18 @@ mod tests {
         );
         app.busy = false;
         (dir, app)
+    }
+    #[test]
+    fn erase_commands_route_to_the_same_paint_controls_as_the_ui() {
+        let (_dir, mut app) = app();
+        for erase in [true, false] {
+            let command: Command = serde_json::from_value(serde_json::json!({
+                "command": "layer_erase", "value": erase,
+            }))
+            .unwrap();
+            let _ = app.update(command.message().unwrap());
+            assert_eq!(app.designer.erase, erase);
+        }
     }
     #[test]
     fn scripts_reject_unbounded_files_excess_commands_and_waits() {
@@ -512,6 +550,22 @@ mod tests {
         assert_eq!(load(Some(&path)).unwrap().len(), 2);
         assert!(load(None).unwrap().is_empty());
     }
+    #[test]
+    fn scripts_reject_finish_before_the_last_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commands.json");
+        for invalid in [
+            r#"[{"command":"finish"},{"command":"assert","state":{"paused":true}},{"command":"finish"}]"#,
+            r#"[{"command":"finish"},{"command":"finish"}]"#,
+            r#"[{"command":"finish"},{"command":"assert","state":{"paused":true}}]"#,
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            let error = load(Some(&path)).err().unwrap();
+            assert!(error.to_string().contains("exactly one finish at the end"));
+        }
+        std::fs::write(&path, r#"[{"command":"finish"}]"#).unwrap();
+        assert_eq!(load(Some(&path)).unwrap().len(), 1);
+    }
     #[cfg(unix)]
     #[test]
     fn audit_fifo_is_rejected_without_opening_it() {
@@ -529,11 +583,11 @@ mod tests {
     #[test]
     fn empty_and_paused_screenshots_do_not_require_wallpaper_ticks() {
         let (_dir, mut app) = app();
-        app.screenshot = Some("empty.png".into());
+        app.final_screenshot = Some("empty.png".into());
         app.screenshot_delay = Duration::ZERO;
         app.preview_paused = true;
         let _ = app.audit_poll();
-        assert!(app.capturing);
+        assert!(app.active_capture.is_some());
         assert!(app.exit_failure.lock().unwrap().is_none());
     }
     #[test]
@@ -542,10 +596,10 @@ mod tests {
         let _ = app.update(Message::Designer(DesignerMessage::Opened(Err(
             "missing source".into(),
         ))));
-        app.screenshot = Some("error.png".into());
+        app.final_screenshot = Some("error.png".into());
         app.screenshot_delay = Duration::ZERO;
         let _ = app.audit_poll();
-        assert!(app.capturing);
+        assert!(app.active_capture.is_some());
         assert!(
             app.exit_failure
                 .lock()
@@ -619,8 +673,8 @@ mod tests {
     #[test]
     fn unavailable_screenshots_and_unfinished_smoke_runs_fail_with_bounded_timeouts() {
         let (_dir, mut app) = app();
-        app.capturing = true;
-        app.capture_started = Instant::now() - Duration::from_secs(11);
+        let _ = app.capture("timeout.png".into(), CaptureCompletion::Exit);
+        app.active_capture.as_mut().unwrap().started = Instant::now() - Duration::from_secs(11);
         let _ = app.audit_poll();
         assert!(
             app.exit_failure
@@ -630,7 +684,7 @@ mod tests {
                 .unwrap()
                 .contains("screenshot timed out")
         );
-        app.capturing = false;
+        app.active_capture = None;
         *app.exit_failure.lock().unwrap() = None;
         app.frame_limit = Some(1);
         app.started = Instant::now() - Duration::from_secs(46);
@@ -669,8 +723,7 @@ mod tests {
             status: Default::default(),
         });
         let path = dir.path().join("capture.png");
-        app.screenshot = Some(path.clone());
-        let _ = app.capture(true);
+        let _ = app.capture(path.clone(), CaptureCompletion::Exit);
         app.preview.as_ref().unwrap().status.lock().unwrap().error =
             Some("late GPU failure".into());
         let screenshot =
@@ -686,7 +739,7 @@ mod tests {
                 .contains("late GPU failure")
         );
         let original = std::fs::read(&path).unwrap();
-        app.screenshot = Some(path.clone());
+        let _ = app.capture(path.clone(), CaptureCompletion::Checkpoint);
         let _ = app.update(Message::Screenshot(screenshot));
         assert!(
             app.exit_failure
@@ -697,6 +750,130 @@ mod tests {
                 .contains("Could not save screenshot")
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    #[test]
+    fn scripted_screenshots_preserve_the_separate_final_cli_destination() {
+        let (dir, mut app) = app();
+        let checkpoint = dir.path().join("checkpoint.png");
+        let final_path = dir.path().join("final.png");
+        app.final_screenshot = Some(final_path.clone());
+        app.audit_commands = VecDeque::from([
+            Command::Screenshot {
+                path: checkpoint.clone(),
+            },
+            Command::Finish {},
+        ]);
+        let screenshot =
+            iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+        let _ = app.audit_poll();
+        assert_eq!(app.active_capture.as_ref().unwrap().path, checkpoint);
+        assert_eq!(app.final_screenshot, Some(final_path.clone()));
+        let _ = app.update(Message::Screenshot(screenshot.clone()));
+        assert!(checkpoint.is_file());
+        assert!(!final_path.exists());
+        let _ = app.audit_poll();
+        let capture = app.active_capture.as_ref().unwrap();
+        assert_eq!(capture.path, final_path);
+        assert!(capture.completion == CaptureCompletion::AuditFinish);
+        assert!(app.final_screenshot.is_none());
+        assert_eq!(app.audit_commands.len(), 1);
+        let _ = app.update(Message::Screenshot(screenshot));
+        assert!(final_path.is_file());
+        let _ = app.audit_poll();
+        assert!(app.audit_commands.is_empty());
+        assert!(app.active_capture.is_none());
+        assert!(app.exit_failure.lock().unwrap().is_none());
+    }
+    #[test]
+    fn checkpoint_errors_can_recover_before_the_terminal_capture() {
+        let (dir, mut app) = app();
+        let checkpoint = dir.path().join("invalid.png");
+        let final_path = dir.path().join("recovered.png");
+        app.final_screenshot = Some(final_path.clone());
+        app.audit_commands = VecDeque::from([
+            Command::Screenshot {
+                path: checkpoint.clone(),
+            },
+            Command::Finish {},
+        ]);
+        app.preview = Some(Preview {
+            generation: 1,
+            wallpaper: Arc::new(
+                Wallpaper::from_package(
+                    &crate::graph::Document::default().compile().unwrap().package,
+                )
+                .unwrap(),
+            ),
+            parameters: Default::default(),
+            globals: Globals::new(1, 1),
+            status: Default::default(),
+        });
+        let status = app.preview.as_ref().unwrap().status.clone();
+        status.lock().unwrap().error = Some("intentional invalid edit".into());
+        let screenshot =
+            iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+        let _ = app.audit_poll();
+        let _ = app.update(Message::Screenshot(screenshot.clone()));
+        assert!(checkpoint.is_file());
+        assert!(app.exit_failure.lock().unwrap().is_none());
+        status.lock().unwrap().error = None;
+        let _ = app.audit_poll();
+        let _ = app.update(Message::Screenshot(screenshot));
+        let _ = app.audit_poll();
+        assert!(final_path.is_file());
+        assert!(app.exit_failure.lock().unwrap().is_none());
+        assert!(app.audit_commands.is_empty());
+    }
+    #[test]
+    fn final_cli_capture_after_finish_retains_startup_and_late_gpu_failures() {
+        for late_gpu_error in [false, true] {
+            let (dir, mut app) = app();
+            let path = dir.path().join("error.png");
+            app.final_screenshot = Some(path.clone());
+            app.audit_commands.push_back(Command::Finish {});
+            if !late_gpu_error {
+                let _ = app.update(Message::Designer(DesignerMessage::Opened(Err(
+                    "missing source".into(),
+                ))));
+            }
+            let _ = app.audit_poll();
+            assert!(
+                app.active_capture.as_ref().unwrap().completion == CaptureCompletion::AuditFinish
+            );
+            if late_gpu_error {
+                app.preview = Some(Preview {
+                    generation: 1,
+                    wallpaper: Arc::new(
+                        Wallpaper::from_package(
+                            &crate::graph::Document::default().compile().unwrap().package,
+                        )
+                        .unwrap(),
+                    ),
+                    parameters: Default::default(),
+                    globals: Globals::new(1, 1),
+                    status: Default::default(),
+                });
+                app.preview.as_ref().unwrap().status.lock().unwrap().error =
+                    Some("late GPU failure".into());
+            }
+            let screenshot =
+                iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+            let _ = app.update(Message::Screenshot(screenshot));
+            assert!(path.is_file());
+            let expected_error = if late_gpu_error {
+                "late GPU failure"
+            } else {
+                "missing source"
+            };
+            assert!(
+                app.exit_failure
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .contains(expected_error)
+            );
+        }
     }
     #[test]
     fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {
@@ -725,8 +902,11 @@ mod tests {
         )
         .unwrap();
         let _ = app.audit_poll();
-        assert!(app.capturing);
-        assert!(!app.capture_exit);
+        assert!(app.active_capture.is_some());
+        assert!(matches!(
+            app.active_capture.as_ref().unwrap().completion,
+            CaptureCompletion::Checkpoint
+        ));
         let _ = app.audit_poll();
         assert!(!app.preview_paused);
         assert_eq!(app.audit_commands.len(), 1);
