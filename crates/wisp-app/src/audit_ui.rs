@@ -16,6 +16,11 @@ pub(super) enum Command {
     Wait {
         milliseconds: u64,
     },
+    WaitFor {
+        state: serde_json::Map<String, serde_json::Value>,
+        #[serde(default = "default_state_wait_timeout_ms")]
+        timeout_ms: u64,
+    },
     Screenshot {
         path: PathBuf,
     },
@@ -153,6 +158,58 @@ pub(super) enum Command {
 const MAX_AUDIT_BYTES: u64 = 1024 * 1024;
 const MAX_AUDIT_COMMANDS: usize = 1024;
 
+fn default_state_wait_timeout_ms() -> u64 {
+    10_000
+}
+
+fn validate_state_expectations(
+    expected: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    for (key, value) in expected {
+        let valid = match key.as_str() {
+            "page" => value.as_str().is_some_and(|page| {
+                matches!(
+                    page,
+                    "library" | "designer" | "graph" | "import" | "settings"
+                )
+            }),
+            "busy" | "paused" | "focus" | "designer_dirty" | "designer_valid" | "graph_dirty"
+            | "graph_valid" | "preview_error" | "preview_ready" | "paint_dirty" => {
+                value.is_boolean()
+            }
+            "parameter_errors" => value.as_u64().is_some(),
+            "graph_nodes" => value.is_null() || value.as_u64().is_some(),
+            "designer_name" => value.is_null() || value.is_string(),
+            "status" | "graph_diagnostic" | "status_contains" => value.is_string(),
+            _ => anyhow::bail!("unknown state assertion key: {key}"),
+        };
+        ensure!(valid, "invalid state expectation for {key}: {value}");
+    }
+    Ok(())
+}
+
+fn assert_state_matches(
+    state: &serde_json::Value,
+    expected: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    for (key, value) in expected {
+        if key == "status_contains" {
+            let status = state["status"].as_str().unwrap_or_default();
+            ensure!(
+                status.contains(value.as_str().context("status_contains must be text")?),
+                "status assertion failed: {status}"
+            );
+        } else {
+            ensure!(
+                state.get(key).is_some() && state.get(key) == Some(value),
+                "state assertion {key}: expected {value}, got {}",
+                state.get(key).unwrap_or(&serde_json::Value::Null)
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
     let Some(path) = path else {
         return Ok(VecDeque::new());
@@ -176,7 +233,11 @@ pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
     let mut total_wait = 0u64;
     for command in &commands {
         match command {
-            Command::Wait { milliseconds } => {
+            Command::Wait { milliseconds }
+            | Command::WaitFor {
+                timeout_ms: milliseconds,
+                ..
+            } => {
                 ensure!(
                     *milliseconds <= 30_000,
                     "audit waits cannot exceed 30000 milliseconds"
@@ -186,6 +247,9 @@ pub(super) fn load(path: Option<&Path>) -> Result<VecDeque<Command>> {
                     total_wait <= 90_000,
                     "total audit waits cannot exceed 90000 milliseconds"
                 );
+                if let Command::WaitFor { state, .. } = command {
+                    validate_state_expectations(state)?;
+                }
             }
             Command::DesignerValue { value, .. }
             | Command::LayerValue { value, .. }
@@ -407,27 +471,12 @@ impl App {
         })
     }
     fn assert_state(&self, expected: &serde_json::Value) -> Result<()> {
-        let state = self.state();
-        for (key, value) in expected
-            .as_object()
-            .context("assert state must be an object")?
-        {
-            if key == "status_contains" {
-                ensure!(
-                    self.status
-                        .contains(value.as_str().context("status_contains must be text")?),
-                    "status assertion failed: {}",
-                    self.status
-                );
-            } else {
-                ensure!(
-                    state.get(key).is_some() && state.get(key) == Some(value),
-                    "state assertion {key}: expected {value}, got {}",
-                    state.get(key).unwrap_or(&serde_json::Value::Null)
-                );
-            }
-        }
-        Ok(())
+        assert_state_matches(
+            &self.state(),
+            expected
+                .as_object()
+                .context("assert state must be an object")?,
+        )
     }
     pub(super) fn audit_poll(&mut self) -> Task<Message> {
         if let Some(capture) = &self.active_capture {
@@ -463,11 +512,36 @@ impl App {
             if self.started.elapsed() > Duration::from_secs(120) {
                 return self.fail_audit(format!("audit commands timed out: {}", self.status));
             }
-            if self.busy
-                || self
-                    .audit_wait_until
-                    .is_some_and(|until| Instant::now() < until)
+            if self
+                .audit_wait_until
+                .is_some_and(|until| Instant::now() < until)
             {
+                return Task::none();
+            }
+            if let Some(Command::WaitFor { state, timeout_ms }) = self.audit_commands.front() {
+                if let Err(error) = validate_state_expectations(state) {
+                    return self.fail_audit(format!("{error:#}"));
+                }
+                let current_state = self.state();
+                let started = self.audit_state_wait_started.get_or_insert_with(|| {
+                    println!("AUDIT_STATE {current_state}");
+                    Instant::now()
+                });
+                match assert_state_matches(&current_state, state) {
+                    Ok(()) => {
+                        self.audit_commands.pop_front();
+                        self.audit_state_wait_started = None;
+                    }
+                    Err(error) if started.elapsed() >= Duration::from_millis(*timeout_ms) => {
+                        return self.fail_audit(format!(
+                            "wait_for timed out after {timeout_ms} milliseconds: {error:#}; current state: {current_state}"
+                        ));
+                    }
+                    Err(_) => {}
+                }
+                return Task::none();
+            }
+            if self.busy {
                 return Task::none();
             }
             let command = self.audit_commands.pop_front().unwrap();
@@ -573,6 +647,172 @@ mod tests {
         .unwrap();
         assert_eq!(load(Some(&path)).unwrap().len(), 2);
         assert!(load(None).unwrap().is_empty());
+    }
+    #[test]
+    fn state_wait_schema_defaults_and_shared_wait_budget_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commands.json");
+        let default_wait = serde_json::json!({"command": "wait_for", "state": {}});
+        let command: Command = serde_json::from_value(default_wait.clone()).unwrap();
+        assert!(matches!(
+            command,
+            Command::WaitFor {
+                timeout_ms: 10_000,
+                ..
+            }
+        ));
+        for (milliseconds, valid) in [(20_000, true), (20_001, false)] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!([
+                    {"command": "wait", "milliseconds": 30_000},
+                    {"command": "wait_for", "state": {"preview_ready": true}, "timeout_ms": 30_000},
+                    default_wait,
+                    {"command": "wait", "milliseconds": milliseconds},
+                    {"command": "finish"}
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            let result = load(Some(&path));
+            if valid {
+                assert_eq!(result.unwrap().len(), 5);
+            } else {
+                assert!(result.err().unwrap().to_string().contains("90000"));
+            }
+        }
+        for invalid in [
+            serde_json::json!({"command": "wait_for", "state": {}, "timeout_ms": 30_001}),
+            serde_json::json!({"command": "wait_for", "state": {"unknown": false}}),
+            serde_json::json!({"command": "wait_for", "state": {"preview_ready": "true"}}),
+            serde_json::json!({"command": "wait_for", "state": {"status_contains": 1}}),
+            serde_json::json!({"command": "wait_for", "state": {"page": "unknown"}}),
+            serde_json::json!({"command": "wait_for", "state": {"graph_nodes": -1}}),
+            serde_json::json!({"command": "wait_for", "state": []}),
+            serde_json::json!({"command": "wait_for", "state": null}),
+            serde_json::json!({"command": "wait_for", "timeout_ms": 1}),
+            serde_json::json!({"command": "wait_for", "state": {}, "timeout_ms": -1}),
+            serde_json::json!({"command": "wait_for", "state": {}, "timeout_ms": 0.5}),
+            serde_json::json!({"command": "wait_for", "state": {}, "typo": 1}),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!([invalid, {"command": "finish"}])).unwrap(),
+            )
+            .unwrap();
+            assert!(load(Some(&path)).is_err());
+        }
+    }
+    #[test]
+    fn state_wait_immediately_matches_without_dispatching_the_next_command() {
+        let (_dir, mut app) = app();
+        app.busy = true;
+        app.audit_commands = serde_json::from_value(serde_json::json!([
+            {"command": "wait_for", "state": app.state(), "timeout_ms": 0},
+            {"command": "pause_preview"}
+        ]))
+        .unwrap();
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 1);
+        assert!(app.audit_state_wait_started.is_none());
+        assert!(!app.preview_paused);
+        assert!(app.exit_failure.lock().unwrap().is_none());
+    }
+    #[test]
+    fn state_wait_polls_until_current_generation_and_status_match() {
+        let (_dir, mut app) = app();
+        let wallpaper = Arc::new(
+            Wallpaper::from_package(&crate::graph::Document::default().compile().unwrap().package)
+                .unwrap(),
+        );
+        app.preview = Some(Preview {
+            generation: 7,
+            wallpaper,
+            parameters: Default::default(),
+            globals: Globals::new(1, 1),
+            status: Default::default(),
+        });
+        let status = app.preview.as_ref().unwrap().status.clone();
+        status.lock().unwrap().rendered_generation = Some(6);
+        app.status = "compiling".into();
+        app.audit_commands = serde_json::from_str(
+            r#"[
+                {"command":"wait_for","state":{"preview_ready":true,"status_contains":"ready"}},
+                {"command":"pause_preview"}
+            ]"#,
+        )
+        .unwrap();
+        let _ = app.audit_poll();
+        let started = app.audit_state_wait_started.unwrap();
+        assert_eq!(app.audit_commands.len(), 2);
+        assert!(!app.preview_paused);
+        {
+            let mut status = status.lock().unwrap();
+            status.rendered_generation = Some(7);
+            status.error = Some("replacement rejected".into());
+        }
+        app.status = "ready".into();
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 2);
+        assert_eq!(app.audit_state_wait_started, Some(started));
+        status.lock().unwrap().error = None;
+        app.status = "compiling".into();
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 2);
+        app.status = "preview ready".into();
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 1);
+        assert!(app.audit_state_wait_started.is_none());
+        assert!(!app.preview_paused);
+        let _ = app.audit_poll();
+        assert!(app.preview_paused);
+        assert!(app.exit_failure.lock().unwrap().is_none());
+    }
+    #[test]
+    fn state_wait_timeout_fails_with_the_mismatch_and_blocks_later_commands_even_when_busy() {
+        let (_dir, mut app) = app();
+        app.busy = true;
+        app.audit_commands = serde_json::from_str(
+            r#"[
+                {"command":"wait_for","state":{"preview_ready":true},"timeout_ms":100},
+                {"command":"pause_preview"}
+            ]"#,
+        )
+        .unwrap();
+        let _ = app.audit_poll();
+        assert!(app.audit_state_wait_started.is_some());
+        assert!(app.exit_failure.lock().unwrap().is_none());
+        app.audit_state_wait_started = Some(Instant::now() - Duration::from_millis(101));
+        let _ = app.audit_poll();
+        let failure = app.exit_failure.lock().unwrap().clone().unwrap();
+        assert!(failure.contains("wait_for timed out after 100 milliseconds"));
+        assert!(failure.contains("preview_ready: expected true, got false"));
+        assert!(failure.contains("current state:"));
+        assert_eq!(app.audit_commands.len(), 2);
+        assert!(!app.preview_paused);
+    }
+    #[test]
+    fn state_wait_invalid_expectations_fail_before_starting_the_timeout() {
+        for state in [
+            serde_json::json!({"unknown": false}),
+            serde_json::json!({"preview_ready": "true"}),
+            serde_json::json!({"status_contains": false}),
+            serde_json::json!({"designer_name": 1}),
+            serde_json::json!({"parameter_errors": null}),
+        ] {
+            let (_dir, mut app) = app();
+            app.busy = true;
+            app.audit_commands = serde_json::from_value(serde_json::json!([
+                {"command": "wait_for", "state": state, "timeout_ms": 30_000},
+                {"command": "pause_preview"}
+            ]))
+            .unwrap();
+            let _ = app.audit_poll();
+            assert!(app.audit_state_wait_started.is_none());
+            assert!(app.exit_failure.lock().unwrap().is_some());
+            assert_eq!(app.audit_commands.len(), 2);
+            assert!(!app.preview_paused);
+        }
     }
     #[test]
     fn scripts_reject_finish_before_the_last_command() {

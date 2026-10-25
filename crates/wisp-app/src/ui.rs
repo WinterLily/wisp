@@ -277,6 +277,7 @@ struct App {
     exit_failure: Arc<Mutex<Option<String>>>,
     audit_commands: std::collections::VecDeque<audit_ui::Command>,
     audit_wait_until: Option<Instant>,
+    audit_state_wait_started: Option<Instant>,
 }
 fn work<T: Send + 'static>(
     job: impl FnOnce() -> Result<T> + Send + 'static,
@@ -370,6 +371,7 @@ impl App {
             exit_failure: Arc::new(Mutex::new(None)),
             audit_commands: Default::default(),
             audit_wait_until: None,
+            audit_state_wait_started: None,
         };
         let scan = work(
             move || {
