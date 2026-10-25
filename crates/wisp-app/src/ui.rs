@@ -8,6 +8,9 @@ mod graph_canvas;
 mod graph_ui;
 #[path = "icons.rs"]
 mod icons;
+#[cfg(test)]
+#[path = "slider_tests.rs"]
+mod slider_tests;
 #[path = "style.rs"]
 mod style;
 use crate::{

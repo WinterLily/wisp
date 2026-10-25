@@ -68,6 +68,7 @@ pub(super) struct Designer {
     pub paint_last_compile: Option<Instant>,
     pub paint_expanded: bool,
     pub compiling: bool,
+    pub compile_pending: bool,
 }
 impl Designer {
     fn airbrush_flow(&self) -> f32 {
@@ -194,7 +195,7 @@ impl App {
                     return self.compile_design();
                 }
             }
-            Value(id, value) if !self.busy => {
+            Value(id, value) if !self.busy || self.designer.compiling => {
                 if let Some(control) = CONTROLS.iter().find(|c| c.id == id)
                     && value.is_finite()
                     && (control.min..=control.max).contains(&value)
@@ -219,7 +220,16 @@ impl App {
                         let parameters = wallpaper
                             .parameters()
                             .iter()
-                            .map(|p| (p.id.clone(), p.default.clone()))
+                            .map(|p| {
+                                let value = self
+                                    .designer
+                                    .draft
+                                    .as_ref()
+                                    .and_then(|draft| draft.design.values.get(&p.id))
+                                    .map(|value| ParameterValue::Float(*value))
+                                    .unwrap_or_else(|| p.default.clone());
+                                (p.id.clone(), value)
+                            })
                             .collect();
                         self.designer.preview = Some(Preview {
                             generation: self.generation,
@@ -242,6 +252,9 @@ impl App {
                         self.status =
                             format!("Design could not compile; previous preview retained: {e}");
                     }
+                }
+                if std::mem::take(&mut self.designer.compile_pending) {
+                    return self.compile_design();
                 }
             }
             SaveTo(project, path) if !self.busy => {
@@ -345,6 +358,11 @@ impl App {
         let Some(draft) = self.designer.draft.clone() else {
             return Task::none();
         };
+        // A released slider must eventually render its latest edit without overlapping compiles.
+        if self.designer.compiling {
+            self.designer.compile_pending = true;
+            return Task::none();
+        }
         self.designer.paint_pending = false;
         self.designer.paint_last_compile = Some(Instant::now());
         self.designer.compiling = true;
