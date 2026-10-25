@@ -1,7 +1,7 @@
-use super::{Message, style};
+use super::{Message, motion, style};
 use iced::{
     Element,
-    widget::{button, container, svg, text, tooltip},
+    widget::{container, svg, text, tooltip},
 };
 use std::time::Duration;
 
@@ -87,7 +87,8 @@ pub(super) fn icon_button<'a>(
                 theme.palette().text
             }),
         });
-    let control = button(container(glyph).center(36))
+    let control = motion::Button::new(container(glyph).center(36))
+        .selected(selected)
         .padding(0)
         .style(if selected {
             style::selected
