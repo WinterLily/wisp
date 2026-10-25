@@ -14,6 +14,7 @@ use wisp_runtime::{Globals, Renderer, Wallpaper};
 #[derive(Default, Debug)]
 pub struct Status {
     pub frames: u64,
+    pub rendered_generation: Option<u64>,
     pub error: Option<String>,
 }
 #[derive(Clone)]
@@ -96,6 +97,8 @@ impl<Message> shader::Program<Message> for Preview {
 pub struct Pipeline {
     renderer: Option<Renderer>,
     attempted: Option<u64>,
+    rendered_generation: Option<u64>,
+    runtime_limits: wisp_runtime::RuntimeLimits,
     parameters: BTreeMap<String, ParameterValue>,
     texture: Option<(wgpu::TextureView, wgpu::BindGroup, [u32; 2])>,
     blit: wgpu::RenderPipeline,
@@ -188,6 +191,8 @@ impl shader::Pipeline for Pipeline {
         Self {
             renderer: None,
             attempted: None,
+            rendered_generation: None,
+            runtime_limits: Default::default(),
             parameters: BTreeMap::new(),
             texture: None,
             blit,
@@ -223,19 +228,24 @@ impl shader::Primitive for Primitive {
                 queue,
                 &preview.wallpaper,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
-                &Default::default(),
+                &pipeline.runtime_limits,
             )) {
                 Ok(renderer) => {
                     pipeline.renderer = Some(renderer);
+                    pipeline.rendered_generation = Some(preview.generation);
                     pipeline.needs_frame = true;
                     pipeline.parameters.clear();
                     preview.status.lock().unwrap().error = None;
                 }
                 Err(error) => {
+                    pipeline.needs_frame = false;
                     preview.status.lock().unwrap().error =
                         Some(format!("Preview could not load: {error:#}"))
                 }
             }
+        }
+        if preview.status.lock().unwrap().error.is_some() {
+            pipeline.needs_frame = false;
         }
         if preview.status.lock().unwrap().error.is_none()
             && pipeline.parameters != *preview.parameters
@@ -348,7 +358,13 @@ impl shader::Primitive for Primitive {
         }
         if pipeline.needs_frame {
             renderer.render(&pipeline.queue, encoder, view, &pipeline.globals);
-            self.preview.status.lock().unwrap().frames += 1;
+            let mut status = self.preview.status.lock().unwrap();
+            if pipeline.rendered_generation == Some(self.preview.generation)
+                && status.error.is_none()
+            {
+                status.frames += 1;
+                status.rendered_generation = pipeline.rendered_generation;
+            }
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Wisp preview composite"),
