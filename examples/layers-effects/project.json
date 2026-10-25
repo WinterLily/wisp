@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "local.easy.22f27aa063577455fd2ffb2dfa2b556e25e790aeef43047083f4494e924aabb5",
+  "name": "layers-rain",
+  "author": "Me",
+  "description": "Created with Wisp Easy Designer",
+  "tags": [
+    "easy-designer"
+  ],
+  "assets": {
+    "background": {
+      "path": "assets/image0.png"
+    },
+    "layer_asset0": {
+      "path": "assets/image1.png"
+    },
+    "layer_asset1": {
+      "path": "assets/image2.png"
+    }
+  }
+}

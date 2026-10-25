@@ -1,0 +1,18 @@
+[package]
+name = "wisp-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+rustfft.workspace = true
+crossbeam-queue.workspace = true
+cpal.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pulseaudio"] }
+
+[dev-dependencies]
+tempfile.workspace = true

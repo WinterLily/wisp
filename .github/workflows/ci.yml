@@ -1,0 +1,190 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux window dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo run --locked -- --check
+      - run: cargo run --locked -p wisp -- --data-dir app-check --import examples/graph-fused --check
+      - run: cargo run --locked -p wisp -- --data-dir app-check --create examples/shader-basic/background.png --check
+      - run: cargo run --locked -p wisp -- --data-dir app-check --graph examples/graph-blur --check
+      - run: cargo run --locked -p wisp -- --data-dir app-check --graph examples/audio-reactive --check
+      - run: cargo run --locked -p wisp -- --data-dir app-check --create examples/layers-effects --check
+
+  gpu:
+    strategy:
+      matrix:
+        backend: [vulkan, gl]
+    runs-on: ubuntu-latest
+    env:
+      WGPU_BACKEND: ${{ matrix.backend }}
+      XDG_RUNTIME_DIR: /tmp/wisp-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install software graphics drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libegl1 libgles2 libgl1-mesa-dri libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+      - run: cargo test --locked -p wisp-runtime --test gpu -- --ignored
+      - run: cargo test --locked -p wisp-compiler --test gpu -- --ignored
+      - run: cargo test --locked -p wisp-app --lib -- --ignored
+
+  parity-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install window build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+      - name: Build shared package fixtures
+        run: |
+          cargo run --locked -p wisp-app --example easy-presets -- fixtures
+          cargo run --locked -p wisp-app --example layer-effects -- layer-fixtures
+          cp layer-fixtures/*.wisp fixtures/
+          cargo run --locked -- --export fixtures/basic.wisp
+          python3 examples/texture-blend/build-package.py fixtures/blend.wisp
+          python3 examples/multipass-blur/build-package.py fixtures/blur.wisp
+          python3 examples/compute-gradient/build-package.py fixtures/compute.wisp
+          cargo run --locked -p wispc -- examples/graph-fused --output fixtures/graph-fused.wisp
+          cargo run --locked -p wispc -- examples/graph-blur --output fixtures/graph-blur.wisp
+          cargo run --locked -p wispc -- examples/audio-reactive --output fixtures/audio-reactive.wisp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity-packages
+          path: fixtures/*.wisp
+
+  parity-render:
+    needs: parity-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: vulkan
+          - os: windows-latest
+            backend: dx12
+    runs-on: ${{ matrix.os }}
+    env:
+      WGPU_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-packages
+          path: fixtures
+      - name: Install Linux graphics and window dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libegl1 libgles2 libgl1-mesa-dri libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+          mkdir -p /tmp/wisp-runtime
+          chmod 700 /tmp/wisp-runtime
+          echo XDG_RUNTIME_DIR=/tmp/wisp-runtime >> "$GITHUB_ENV"
+      - name: DirectX 12 GPU regression tests
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --locked -p wisp-runtime --test gpu -- --ignored
+          cargo test --locked -p wisp-compiler --test gpu -- --ignored
+          cargo test --locked -p wisp-app --lib -- --ignored
+      - name: Validate and render the identical portable packages
+        shell: bash
+        run: |
+          mkdir snapshots
+          for name in basic blend blur compute graph-fused graph-blur clean gentle dreamy pulse audio-reactive layers-hair layers-clothing layers-wave layers-warp layers-displacement layers-droplets layers-rain layers-ripples; do
+            cargo run --locked -p wispd -- --package "fixtures/$name.wisp" --check
+            cargo run --locked -- --package "fixtures/$name.wisp" --output "snapshots/$name.png" --width 321 --height 181 --time 3 --warmup 30 --audio-bands 0.4,0.1,0.05,0.5
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshots-${{ matrix.backend }}
+          path: snapshots/*.png
+
+  parity-compare:
+    needs: parity-render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: snapshots-*
+          path: snapshots
+      - name: Compare Linux Vulkan with Windows DirectX 12
+        run: |
+          for name in basic blend blur compute graph-fused graph-blur clean gentle dreamy pulse audio-reactive layers-hair layers-clothing layers-wave layers-warp layers-displacement layers-droplets layers-rain layers-ripples; do
+            cargo run --locked -p wisp-runtime --example compare-snapshots -- "snapshots/snapshots-vulkan/$name.png" "snapshots/snapshots-dx12/$name.png"
+          done
+
+  application-window:
+    runs-on: ubuntu-latest
+    env:
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install window and graphics dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers libegl1 libgles2 libgl1-mesa-dri libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+      - run: cargo build --locked -p wisp -p wispd
+      - name: Render the Iced application and save its window
+        run: xvfb-run -a timeout 60s target/debug/wisp --data-dir app-smoke --import examples/graph-blur --frames 12 --screenshot app-window.png
+      - name: Render Easy Designer
+        run: xvfb-run -a timeout 60s target/debug/wisp --data-dir app-designer --create examples/shader-basic/background.png --frames 12 --screenshot designer-window.png
+      - name: Render Visual Graph
+        run: xvfb-run -a timeout 60s target/debug/wisp --data-dir app-graph --graph examples/graph-blur --frames 12 --screenshot graph-window.png
+      - name: Render particles and feedback
+        run: xvfb-run -a timeout 60s target/debug/wisp --data-dir app-interactive --graph examples/audio-reactive --frames 24 --screenshot interactive-window.png
+      - name: Render layers and masks
+        run: xvfb-run -a timeout 60s target/debug/wisp --data-dir app-layers --create examples/layers-effects --frames 24 --screenshot layers-window.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: application-window
+          path: |
+            app-window.png
+            designer-window.png
+            graph-window.png
+            interactive-window.png
+            layers-window.png
+
+  audio-capture:
+    runs-on: ubuntu-latest
+    env:
+      XDG_RUNTIME_DIR: /tmp/wisp-audio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install audio capture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pulseaudio pulseaudio-utils
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+      - name: Verify isolated output monitor capture
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          trap 'pulseaudio --kill' EXIT
+          cargo test --locked -p wisp-audio --test capture -- --ignored

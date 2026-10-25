@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "example.graph-fused",
+  "name": "Graph Fused",
+  "author": "Wisp",
+  "description": "Compiled typed graph example",
+  "assets": {
+    "background": {
+      "path": "assets/background.png"
+    },
+    "unused": {
+      "path": "assets/intentionally-missing.png"
+    }
+  }
+}

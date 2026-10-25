@@ -1,0 +1,56 @@
+[workspace]
+members = ["crates/wisp-audio", "crates/wisp-format", "crates/wisp-ir", "crates/wisp-compiler", "apps/wispc", "crates/wisp-runtime", "apps/wisp-preview", "crates/wisp-host", "crates/wisp-host-wayland", "crates/wisp-host-windows", "apps/wispd", "crates/wisp-app", "apps/wisp"]
+exclude = ["vendor/iced_wgpu"]
+default-members = ["apps/wisp-preview"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+naga = { version = "27", features = ["wgsl-in"] }
+pollster = "0.4"
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+wgpu = "27"
+winit = "0.30"
+wisp-runtime = { path = "crates/wisp-runtime" }
+wisp-format = { path = "crates/wisp-format" }
+wisp-ir = { path = "crates/wisp-ir" }
+wisp-compiler = { path = "crates/wisp-compiler" }
+
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop"] }
+wayland-client = { version = "0.31", features = ["system"] }
+raw-window-handle = "0.6"
+calloop = "0.13"
+calloop-wayland-source = "0.3"
+ctrlc = { version = "3.4", features = ["termination"] }
+wisp-host-wayland = { path = "crates/wisp-host-wayland" }
+wisp-host = { path = "crates/wisp-host" }
+wisp-host-windows = { path = "crates/wisp-host-windows" }
+windows-sys = "0.61"
+
+iced = { version = "0.14", default-features = false, features = ["wgpu", "canvas", "image-without-codecs", "tokio", "x11", "wayland"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tempfile = "3"
+fs2 = "0.4"
+directories = "6"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+sha2 = "0.10"
+wisp-app = { path = "crates/wisp-app" }
+
+wisp-audio = { path = "crates/wisp-audio" }
+cpal = "0.18.2"
+rustfft = "6.4"
+crossbeam-queue = "0.3"
+
+[patch.crates-io]
+iced_wgpu = { path = "vendor/iced_wgpu" }

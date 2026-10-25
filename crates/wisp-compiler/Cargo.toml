@@ -1,0 +1,18 @@
+[package]
+name = "wisp-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wisp-format.workspace = true
+wisp-ir.workspace = true
+wisp-runtime.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+wgpu.workspace = true

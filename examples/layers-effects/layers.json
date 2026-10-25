@@ -1,0 +1,71 @@
+{
+  "version": 2,
+  "layers": [
+    {
+      "name": "Background",
+      "asset": "background",
+      "visible": true,
+      "opacity": 1.0,
+      "position": [
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "rotation": 0.0,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "blend": "alpha",
+      "mask": null,
+      "effect": "rain",
+      "direction": 0.0,
+      "amplitude": 0.025,
+      "frequency": 1.2,
+      "speed": 1.0,
+      "density": 10.0,
+      "size": 0.25,
+      "strength": 0.5,
+      "displacement": null
+    },
+    {
+      "name": "Character",
+      "asset": "layer_asset0",
+      "visible": true,
+      "opacity": 1.0,
+      "position": [
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "rotation": 0.0,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "blend": "alpha",
+      "mask": {
+        "asset": "layer_asset1",
+        "feather": 0.005,
+        "invert": false,
+        "composition": false,
+        "effect": true
+      },
+      "effect": "hair",
+      "direction": 0.0,
+      "amplitude": 0.025,
+      "frequency": 1.2,
+      "speed": 1.5,
+      "density": 10.0,
+      "size": 0.25,
+      "strength": 0.5,
+      "displacement": null
+    }
+  ]
+}

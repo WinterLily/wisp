@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "uv",
+      "op": {
+        "type": "uv"
+      }
+    },
+    {
+      "id": "strength",
+      "op": {
+        "type": "parameter",
+        "parameter": "parallax"
+      }
+    },
+    {
+      "id": "parallax",
+      "op": {
+        "type": "parallax",
+        "uv": "uv",
+        "strength": "strength"
+      }
+    },
+    {
+      "id": "image",
+      "op": {
+        "type": "image",
+        "asset": "background",
+        "uv": "parallax"
+      }
+    },
+    {
+      "id": "gain",
+      "op": {
+        "type": "parameter",
+        "parameter": "brightness"
+      }
+    },
+    {
+      "id": "bright",
+      "op": {
+        "type": "brightness",
+        "color": "image",
+        "amount": "gain"
+      }
+    },
+    {
+      "id": "tint_value",
+      "op": {
+        "type": "parameter",
+        "parameter": "tint"
+      }
+    },
+    {
+      "id": "tinted",
+      "op": {
+        "type": "tint",
+        "color": "bright",
+        "tint": "tint_value"
+      }
+    },
+    {
+      "id": "vignette_strength",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.2
+        }
+      }
+    },
+    {
+      "id": "vignette",
+      "op": {
+        "type": "vignette",
+        "color": "blur",
+        "uv": "uv",
+        "strength": "vignette_strength"
+      }
+    },
+    {
+      "id": "unused",
+      "op": {
+        "type": "image",
+        "asset": "unused",
+        "uv": "uv"
+      }
+    },
+    {
+      "id": "output",
+      "op": {
+        "type": "output",
+        "color": "vignette"
+      }
+    },
+    {
+      "id": "radius",
+      "op": {
+        "type": "parameter",
+        "parameter": "radius"
+      }
+    },
+    {
+      "id": "blur",
+      "op": {
+        "type": "blur",
+        "color": "tinted",
+        "radius": "radius",
+        "width": 640,
+        "height": 360
+      }
+    }
+  ],
+  "output": "output",
+  "parameters": [
+    {
+      "id": "parallax",
+      "default": {
+        "type": "float",
+        "value": 0.06
+      },
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "brightness",
+      "default": {
+        "type": "float",
+        "value": 1.0
+      },
+      "min": 0,
+      "max": 4
+    },
+    {
+      "id": "tint",
+      "default": {
+        "type": "color",
+        "value": [
+          0.8,
+          1.0,
+          0.95,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": "radius",
+      "default": {
+        "type": "float",
+        "value": 3.0
+      },
+      "min": 0,
+      "max": 64
+    }
+  ]
+}

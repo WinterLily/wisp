@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "example.audio-reactive",
+  "name": "Audio Fireflies",
+  "author": "Wisp",
+  "description": "Mouse emitter, audio speed and brightness, persistent particles and fading trails.",
+  "tags": [
+    "audio-responsive",
+    "particles",
+    "interactive"
+  ],
+  "assets": {}
+}

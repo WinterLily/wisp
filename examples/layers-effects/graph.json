@@ -1,0 +1,522 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "uv",
+      "op": {
+        "type": "uv"
+      }
+    },
+    {
+      "id": "parallax",
+      "op": {
+        "type": "parameter",
+        "parameter": "parallax"
+      }
+    },
+    {
+      "id": "speed",
+      "op": {
+        "type": "parameter",
+        "parameter": "speed"
+      }
+    },
+    {
+      "id": "pulse",
+      "op": {
+        "type": "parameter",
+        "parameter": "pulse"
+      }
+    },
+    {
+      "id": "brightness",
+      "op": {
+        "type": "parameter",
+        "parameter": "brightness"
+      }
+    },
+    {
+      "id": "contrast",
+      "op": {
+        "type": "parameter",
+        "parameter": "contrast"
+      }
+    },
+    {
+      "id": "vignette",
+      "op": {
+        "type": "parameter",
+        "parameter": "vignette"
+      }
+    },
+    {
+      "id": "radius",
+      "op": {
+        "type": "parameter",
+        "parameter": "radius"
+      }
+    },
+    {
+      "id": "lit",
+      "op": {
+        "type": "brightness",
+        "color": "layer_n34",
+        "amount": "brightness"
+      }
+    },
+    {
+      "id": "graded",
+      "op": {
+        "type": "contrast",
+        "color": "lit",
+        "amount": "contrast"
+      }
+    },
+    {
+      "id": "output",
+      "op": {
+        "type": "output",
+        "color": "graded"
+      }
+    },
+    {
+      "id": "layer_n0",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.0
+        }
+      }
+    },
+    {
+      "id": "layer_n1",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "color",
+          "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n2",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n3",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n4",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.0
+        }
+      }
+    },
+    {
+      "id": "layer_n5",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            0.5,
+            0.5
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n6",
+      "op": {
+        "type": "transform",
+        "uv": "uv",
+        "position": "layer_n2",
+        "scale": "layer_n3",
+        "rotation": "layer_n4",
+        "pivot": "layer_n5"
+      }
+    },
+    {
+      "id": "layer_n7",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.0
+        }
+      }
+    },
+    {
+      "id": "layer_n8",
+      "op": {
+        "type": "image",
+        "asset": "background",
+        "uv": "layer_n6"
+      }
+    },
+    {
+      "id": "layer_n9",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.0
+        }
+      }
+    },
+    {
+      "id": "layer_n10",
+      "op": {
+        "type": "layer",
+        "color": "layer_n8",
+        "uv": "layer_n6",
+        "opacity": "layer_n9",
+        "mask": "layer_n0"
+      }
+    },
+    {
+      "id": "layer_n11",
+      "op": {
+        "type": "blend",
+        "a": "layer_n1",
+        "b": "layer_n10",
+        "mode": "alpha"
+      }
+    },
+    {
+      "id": "layer_n12",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 10.0
+        }
+      }
+    },
+    {
+      "id": "layer_n13",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.25
+        }
+      }
+    },
+    {
+      "id": "layer_n14",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.5
+        }
+      }
+    },
+    {
+      "id": "layer_n15",
+      "op": {
+        "type": "multiply",
+        "a": "layer_n0",
+        "b": "layer_n9"
+      }
+    },
+    {
+      "id": "layer_n16",
+      "op": {
+        "type": "weather",
+        "color": "layer_n11",
+        "uv": "layer_n6",
+        "mask": "layer_n15",
+        "density": "layer_n12",
+        "size": "layer_n13",
+        "speed": "layer_n7",
+        "strength": "layer_n14",
+        "kind": "rain"
+      }
+    },
+    {
+      "id": "layer_n17",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n18",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n19",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.0
+        }
+      }
+    },
+    {
+      "id": "layer_n20",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            0.5,
+            0.5
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n21",
+      "op": {
+        "type": "transform",
+        "uv": "uv",
+        "position": "layer_n17",
+        "scale": "layer_n18",
+        "rotation": "layer_n19",
+        "pivot": "layer_n20"
+      }
+    },
+    {
+      "id": "layer_n22",
+      "op": {
+        "type": "image",
+        "asset": "layer_asset1",
+        "uv": "layer_n21"
+      }
+    },
+    {
+      "id": "layer_n23",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.005
+        }
+      }
+    },
+    {
+      "id": "layer_n24",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "boolean",
+          "value": false
+        }
+      }
+    },
+    {
+      "id": "layer_n25",
+      "op": {
+        "type": "mask",
+        "color": "layer_n22",
+        "feather": "layer_n23",
+        "invert": "layer_n24"
+      }
+    },
+    {
+      "id": "layer_n26",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.5
+        }
+      }
+    },
+    {
+      "id": "layer_n27",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "vector2",
+          "value": [
+            1.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "layer_n28",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 0.025
+        }
+      }
+    },
+    {
+      "id": "layer_n29",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.2
+        }
+      }
+    },
+    {
+      "id": "layer_n30",
+      "op": {
+        "type": "wave",
+        "uv": "layer_n21",
+        "mask": "layer_n25",
+        "direction": "layer_n27",
+        "amplitude": "layer_n28",
+        "frequency": "layer_n29",
+        "speed": "layer_n26"
+      }
+    },
+    {
+      "id": "layer_n31",
+      "op": {
+        "type": "image",
+        "asset": "layer_asset0",
+        "uv": "layer_n30"
+      }
+    },
+    {
+      "id": "layer_n32",
+      "op": {
+        "type": "constant",
+        "value": {
+          "type": "float",
+          "value": 1.0
+        }
+      }
+    },
+    {
+      "id": "layer_n33",
+      "op": {
+        "type": "layer",
+        "color": "layer_n31",
+        "uv": "layer_n30",
+        "opacity": "layer_n32",
+        "mask": "layer_n0"
+      }
+    },
+    {
+      "id": "layer_n34",
+      "op": {
+        "type": "blend",
+        "a": "layer_n16",
+        "b": "layer_n33",
+        "mode": "alpha"
+      }
+    }
+  ],
+  "output": "output",
+  "parameters": [
+    {
+      "id": "parallax",
+      "default": {
+        "type": "float",
+        "value": 0.03
+      },
+      "min": 0.0,
+      "max": 0.15000000596046448
+    },
+    {
+      "id": "speed",
+      "default": {
+        "type": "float",
+        "value": 0.6
+      },
+      "min": 0.10000000149011612,
+      "max": 4.0
+    },
+    {
+      "id": "pulse",
+      "default": {
+        "type": "float",
+        "value": 0.12
+      },
+      "min": 0.0,
+      "max": 0.5
+    },
+    {
+      "id": "brightness",
+      "default": {
+        "type": "float",
+        "value": 1.0
+      },
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
+      "id": "contrast",
+      "default": {
+        "type": "float",
+        "value": 1.0
+      },
+      "min": 0.0,
+      "max": 2.0
+    },
+    {
+      "id": "vignette",
+      "default": {
+        "type": "float",
+        "value": 0.3
+      },
+      "min": 0.0,
+      "max": 1.0
+    },
+    {
+      "id": "radius",
+      "default": {
+        "type": "float",
+        "value": 2.0
+      },
+      "min": 0.0,
+      "max": 8.0
+    }
+  ]
+}

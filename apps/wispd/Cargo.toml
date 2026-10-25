@@ -1,0 +1,18 @@
+[package]
+name = "wispd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wisp-audio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+fs2.workspace = true
+wisp-host.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wisp-host-wayland.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wisp-host-windows.workspace = true

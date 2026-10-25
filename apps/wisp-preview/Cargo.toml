@@ -1,0 +1,17 @@
+[package]
+name = "wisp-preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wisp-audio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+wisp-runtime.workspace = true
+wisp-format.workspace = true

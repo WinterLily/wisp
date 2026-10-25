@@ -1,0 +1,15 @@
+[package]
+name = "wisp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+wisp-app.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wisp-host.workspace = true
+serde_json.workspace = true

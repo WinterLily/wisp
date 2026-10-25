@@ -1,0 +1,16 @@
+[package]
+name = "wisp-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+image.workspace = true
+naga.workspace = true
+wgpu.workspace = true
+wisp-format.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
