@@ -95,13 +95,15 @@ The JSON array uses snake_case command tags, for example:
 [
   {"command":"page","value":"graph"},
   {"command":"graph_new"},
-  {"command":"assert","state":{"page":"graph","graph_valid":true}},
+  {"command":"wait_for","state":{"page":"graph","busy":false,"graph_valid":true,"preview_ready":true},"timeout_ms":10000},
   {"command":"finish"}
 ]
 ```
 
 Commands wait for pending compilation and captures. Scripts must contain exactly
 one final `finish`; failed assertions emit `AUDIT_FAILED` and exit nonzero.
+`wait_for` polls the same state assertions up to its bounded deadline, so GPU
+readiness does not depend on a fixed sleep.
 The runner's retained command files show edit, path, recovery and capture examples.
 Standalone `--screenshot /absolute/capture.png` also works without `--frames`;
 `--screenshot-delay-ms` defaults to 1000. Checkpoint captures can inspect recoverable

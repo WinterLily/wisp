@@ -150,6 +150,11 @@ def wait(milliseconds=1800):
     return command("wait", milliseconds=milliseconds)
 
 
+def ready(**state):
+    state.setdefault("busy", False)
+    return command("wait_for", state=state, timeout_ms=10000)
+
+
 def screenshot(path):
     return command("screenshot", path=str(path))
 
@@ -327,7 +332,7 @@ class Audit:
             verify_png(path)
         paused = self.output / "paused.png"
         self.app("paused", ["--import", ROOT / "examples/graph-fused"], [
-            wait(), command("pause_preview"), assertion(paused=True), screenshot(paused),
+            ready(preview_ready=True), command("pause_preview"), assertion(paused=True), screenshot(paused),
         ])
         checkpoint = self.output / "combined-checkpoint.png"
         final = self.output / "combined-final.png"
@@ -365,10 +370,20 @@ class Audit:
         require("exactly one finish at the end" in log and "AUDIT_COMPLETE" not in log,
                 "an early finish bypassed later assertions")
 
+        atomic_json(sequence, [command("wait_for", state={"page": "settings"}, timeout_ms=100),
+                               command("finish")])
+        log = self.processes.run(
+            "state-wait-timeout",
+            [self.binary("wisp"), "--data-dir", self.output / "state-wait-library",
+             "--audit-commands", sequence], self.environment, expected=1,
+        )
+        require("AUDIT_FAILED" in log and "AUDIT_COMPLETE" not in log,
+                "state wait timeout did not retain its failure verdict")
+
     def library(self):
         package = self.output / "library-export.wisp"
         self.app("library", ["--import", ROOT / "examples/graph-blur"], [
-            wait(), assertion(page="library", preview_ready=True, parameter_errors=0),
+            ready(page="library", preview_ready=True, parameter_errors=0),
             command("library_float", id="brightness", value=1.5),
             command("library_parameter", id="tint", value="[0.4,0.8,1,1]"),
             assertion(parameter_errors=0),
@@ -389,7 +404,7 @@ class Audit:
         focused = self.output / "keyboard-focus.png"
         restored = self.output / "keyboard-restored.png"
         self.app("keyboard", ["--graph", ROOT / "examples/graph-fused"], [
-            wait(), assertion(page="graph", focus=False, preview_ready=True), screenshot(normal), wait(6000),
+            ready(page="graph", focus=False, preview_ready=True), screenshot(normal), wait(6000),
             assertion(focus=True), screenshot(focused), wait(6000),
             assertion(focus=False), screenshot(restored),
         ], keys=[(normal, "F11"), (focused, "Escape")])
@@ -398,17 +413,17 @@ class Audit:
         project = self.output / "designer-project"
         package = self.output / "designer.wisp"
         self.app("designer", ["--create", ROOT / "examples/shader-basic/background.png"], [
-            wait(), assertion(page="designer", designer_valid=True, preview_ready=True),
+            ready(page="designer", designer_valid=True, preview_ready=True),
             command("designer_name", value="Native audit design"),
             command("designer_author", value="Wisp audit"),
             command("designer_panel", value="effects"),
             command("designer_effect", effect="pulse", enabled=True),
-            command("designer_value", id="brightness", value=1.4), wait(),
-            assertion(designer_dirty=True, designer_name="Native audit design", preview_ready=True),
+            command("designer_value", id="brightness", value=1.4),
+            ready(designer_dirty=True, designer_name="Native audit design", preview_ready=True),
             screenshot(self.output / "designer-edit.png"),
             command("designer_save", path=str(project)), assertion(designer_dirty=False),
-            command("designer_open", path=str(project)), wait(),
-            assertion(designer_name="Native audit design", designer_valid=True, preview_ready=True),
+            command("designer_open", path=str(project)),
+            ready(designer_name="Native audit design", designer_valid=True, preview_ready=True),
             command("designer_open", path=str(self.output / "absent-image.png")),
             assertion(designer_name="Native audit design", designer_valid=True,
                       preview_ready=True, status_contains="Could not open design"),
@@ -423,7 +438,7 @@ class Audit:
         source = ROOT / "examples/layers-effects/assets/image1.png"
         mask = ROOT / "examples/layers-effects/assets/image2.png"
         self.app("layers", ["--create", ROOT / "examples/shader-basic/background.png"], [
-            wait(), command("layer_enable"), command("layer_select", index=0),
+            ready(preview_ready=True), command("layer_enable"), command("layer_select", index=0),
             command("layer_import", path=str(source), kind="layer"),
             command("layer_select", index=1),
             command("layer_import", path=str(mask), kind="mask", index=1),
@@ -442,8 +457,8 @@ class Audit:
             command("layer_erase", value=False), command("layer_expand", value=False),
             command("designer_save", path=str(project)),
             assertion(designer_valid=True, designer_dirty=False, paint_dirty=False),
-            command("designer_open", path=str(project)), wait(),
-            assertion(designer_valid=True, preview_ready=True),
+            command("designer_open", path=str(project)),
+            ready(designer_valid=True, preview_ready=True),
             command("designer_export", path=str(package)),
         ])
         self.validate("layers", project, package)
@@ -455,24 +470,24 @@ class Audit:
         project = self.output / "graph-project"
         package = self.output / "graph.wisp"
         self.app("graph", ["--graph", ROOT / "examples/graph-fused"], [
-            command("graph_new"), wait(), assertion(graph_valid=True, graph_nodes=2),
+            command("graph_new"), ready(graph_valid=True, graph_nodes=2, preview_ready=True),
             command("graph_select", id="color"), command("graph_panel", value="properties"),
             command("graph_field_edit", id="value", value="[0.2,"),
             command("graph_field", id="value", value="[0.2,"),
             assertion(graph_valid=True, preview_ready=True, status_contains="Edit rejected"),
             screenshot(self.output / "graph-invalid-field.png"),
-            command("graph_field", id="value", value="[0.2,0.7,0.9,1]"), wait(),
-            assertion(graph_valid=True, graph_diagnostic="", graph_dirty=True),
+            command("graph_field", id="value", value="[0.2,0.7,0.9,1]"),
+            ready(graph_valid=True, graph_diagnostic="", graph_dirty=True, preview_ready=True),
             command("graph_wire", id="output"),
             command("graph_socket", id="output", input="color"),
             assertion(graph_valid=True, status_contains="Edit rejected"),
             screenshot(self.output / "graph-invalid-wire.png"),
             command("graph_wire", id="color"),
-            command("graph_socket", id="output", input="color"), wait(),
+            command("graph_socket", id="output", input="color"), ready(preview_ready=True),
             command("graph_move", id="color", position=[150, 230]),
             command("graph_save", path=str(project)), assertion(graph_dirty=False),
-            command("graph_open", path=str(project)), wait(),
-            assertion(graph_valid=True, preview_ready=True, graph_nodes=2, graph_diagnostic=""),
+            command("graph_open", path=str(project)),
+            ready(graph_valid=True, preview_ready=True, graph_nodes=2, graph_diagnostic=""),
             screenshot(self.output / "graph-reopened.png"),
             command("graph_export", path=str(package)),
         ])
