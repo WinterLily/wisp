@@ -15,7 +15,7 @@ cargo run -p wisp -- --import examples/shader-basic/background.png
 1. Choose an image, or use **Open project…** to continue a saved draft.
 2. The canvas fills the workspace. Open **Project** to enter a name and author.
 3. Open **Effects** to choose a preset, enable effects, and adjust their controls.
-4. Move the pointer over the live preview to try parallax. Use **Pause** to freeze time.
+4. Use **Pause** to freeze time in the live preview.
 5. **Project → Save project…** creates a new folder containing the image and authoring data.
 6. **Project → Save to library** installs the current result. Select a monitor under **Display** and **Apply wallpaper**
    on the Library page to run it on the desktop.
@@ -30,12 +30,12 @@ as the workspace resizes. Image/project paths and replacement actions are under
 | Preset | Effects | Render passes |
 | --- | --- | --- |
 | Clean image | Brightness and contrast | 1 |
-| Gentle motion | Mouse parallax, breathing light, vignette | 1 |
-| Dreamy focus | Mouse parallax, soft blur, vignette | 3 |
+| Gentle motion | Breathing light, vignette | 1 |
+| Dreamy focus | Soft blur, vignette | 3 |
 | Breathing light | Animated brightness, vignette | 1 |
 
-Effects can be combined independently. Sliders control mouse movement strength,
-light variation, animation speed, brightness, contrast, edge darkening, and softness.
+Effects can be combined independently. Sliders control light variation, animation
+speed, brightness, contrast, edge darkening, and softness.
 Only controls used by enabled effects are exposed in the exported wallpaper.
 Their current values become package defaults; library users can change them per monitor.
 Choosing another preset resets effect controls while retaining the name and author.
@@ -71,7 +71,9 @@ cargo run -p wisp -- --create /path/to/my-wallpaper-project --check
 ```
 
 `--create … --check` validates without a window or GPU and does not install an
-unfinished draft. Easy Designer refuses to reopen a graph that has been edited
+unfinished draft. Older Easy Designer projects reopen with mouse parallax removed.
+Saving a new revision removes its obsolete controls and graph nodes. Easy Designer
+refuses to reopen a graph that has been edited
 externally, so it cannot silently discard those edits. Such projects still import
 through **Import → Choose project folder** and compile with `wispc`.
 
@@ -127,5 +129,6 @@ CPU tests cover all presets, live defaults, project round trips, exact `wispc`
 package equivalence, independent library installation/export, malformed inputs,
 path containment, overwrite protection, failed preview replacement, and CPU-only CLI
 creation. GPU tests compare each preset's embedded preview with its exported package
-within 1/255, and independently check time and mouse response. Native Windows UI,
+within 1/255, check time response, and ensure pointer movement leaves the image fixed.
+Native Windows UI,
 file dialogs, desktop execution, and DirectX 12 parity still require Windows execution.

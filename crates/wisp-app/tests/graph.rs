@@ -80,6 +80,8 @@ fn connections_reject_cycles_and_types_without_mutation_and_recover_incomplete_d
 #[test]
 fn catalog_ports_and_typed_values_are_editable() {
     let mut d = Document::default();
+    assert!(!CATALOG.contains(&"Parallax"));
+    assert!(d.add("Parallax", [0., 0.]).is_err());
     for kind in CATALOG {
         let id = d.add(kind, [0., 0.]).unwrap();
         let n = d.node(&id).unwrap();

@@ -14,7 +14,6 @@ pub(super) enum DesignerPanel {
 
 #[derive(Clone, Copy)]
 pub(super) enum DesignEffect {
-    Parallax,
     Pulse,
     Blur,
     Vignette,
@@ -185,7 +184,6 @@ impl App {
                 if let Some(d) = &mut self.designer.draft {
                     let d = &mut Arc::make_mut(d).design;
                     match index {
-                        DesignEffect::Parallax => d.parallax = enabled,
                         DesignEffect::Pulse => d.pulse = enabled,
                         DesignEffect::Blur => d.blur = enabled,
                         DesignEffect::Vignette => d.vignette = enabled,
@@ -233,7 +231,7 @@ impl App {
                         self.status = if self.designer.paint_expanded {
                             "Preview updated. Painting remains live."
                         } else {
-                            "Preview ready. Move the pointer over the image to try mouse movement."
+                            "Preview ready. Adjust the scene effects to customize your wallpaper."
                         }
                         .into();
                     }
@@ -533,7 +531,6 @@ impl App {
                         .width(Fill),
                     );
                     for (index, label, value) in [
-                        (DesignEffect::Parallax, "Mouse parallax", d.parallax),
                         (DesignEffect::Pulse, "Breathing light", d.pulse),
                         (DesignEffect::Blur, "Soft blur", d.blur),
                         (DesignEffect::Vignette, "Vignette", d.vignette),
@@ -545,8 +542,7 @@ impl App {
                         );
                     }
                     for c in CONTROLS {
-                        if (c.id == "parallax" && !d.parallax)
-                            || (["pulse", "speed"].contains(&c.id) && !d.pulse)
+                        if (["pulse", "speed"].contains(&c.id) && !d.pulse)
                             || (c.id == "radius" && !d.blur)
                             || (c.id == "vignette" && !d.vignette)
                         {

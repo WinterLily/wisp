@@ -52,7 +52,6 @@ pub const CATALOG: &[&str] = &[
     "Multiply",
     "Sin",
     "Translate",
-    "Parallax",
     "Image",
     "Brightness",
     "Contrast",
@@ -447,10 +446,6 @@ impl Document {
             "Translate" => Op::Translate {
                 uv: empty(),
                 offset: empty(),
-            },
-            "Parallax" => Op::Parallax {
-                uv: empty(),
-                strength: empty(),
             },
             "Image" => Op::Image {
                 asset: self.assets.keys().next().cloned().unwrap_or_default(),
