@@ -319,7 +319,9 @@ mod tests {
         publish_owner_pid(&library, &probe, std::process::id());
         let mut stale = DaemonStatus::starting(&Default::default());
         stale.ready = true;
-        stale.write(&library.root.join("daemon.status.json")).unwrap();
+        stale
+            .write(&library.root.join("daemon.status.json"))
+            .unwrap();
 
         let _observation = wisp_host::status::StartupPublicationGate::try_observe(&path)
             .unwrap()
