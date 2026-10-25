@@ -4,6 +4,8 @@ mod designer_ui;
 mod graph_canvas;
 #[path = "graph_ui.rs"]
 mod graph_ui;
+#[path = "icons.rs"]
+mod icons;
 #[path = "style.rs"]
 mod style;
 use crate::{
@@ -22,6 +24,7 @@ use iced::{
         scrollable as iced_scrollable, slider, space, text, text_input,
     },
 };
+use icons::{Icon, icon_button};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -907,24 +910,18 @@ impl App {
         Subscription::batch(subscriptions)
     }
     fn view(&self) -> Element<'_, Message> {
-        let nav = |label, page| {
-            button(text(label).size(13))
-                .style(if self.page == page {
-                    style::selected
-                } else {
-                    style::quiet
-                })
-                .on_press(Message::Page(page))
+        let nav = |icon, label, page| {
+            icon_button(icon, label, Some(Message::Page(page)), self.page == page)
         };
         let navigation = row![
             text("wisp").size(22),
             space().width(20),
-            nav("Library", Page::Library),
-            nav("Create", Page::Designer),
-            nav("Graph", Page::Graph),
+            nav(Icon::Library, "Library", Page::Library),
+            nav(Icon::Create, "Create", Page::Designer),
+            nav(Icon::Graph, "Graph", Page::Graph),
             space().width(Fill),
-            nav("Import", Page::Import),
-            nav("Settings", Page::Settings)
+            nav(Icon::Import, "Import", Page::Import),
+            nav(Icon::Settings, "Settings", Page::Settings)
         ]
         .spacing(4)
         .align_y(iced::Center)
@@ -965,6 +962,22 @@ impl App {
         }
         container(layout).width(Fill).height(Fill).into()
     }
+    fn playback_button(&self) -> Element<'_, Message> {
+        icon_button(
+            if self.preview_paused {
+                Icon::Play
+            } else {
+                Icon::Pause
+            },
+            if self.preview_paused {
+                "Play preview"
+            } else {
+                "Pause preview"
+            },
+            Some(Message::PausePreview),
+            false,
+        )
+    }
     fn wallpaper_controls(&self) -> Element<'_, Message> {
         let mut detail = column![].spacing(14);
         if let (Some(item), Some(preview)) = (self.item(), &self.preview) {
@@ -973,7 +986,12 @@ impl App {
                     row![
                         text("Wallpaper controls").size(18),
                         space().width(Fill),
-                        button("Reset").on_press(Message::Reset)
+                        icon_button(
+                            Icon::Reset,
+                            "Reset wallpaper controls",
+                            Some(Message::Reset),
+                            false
+                        )
                     ]
                     .spacing(10),
                 );
@@ -1130,23 +1148,21 @@ impl App {
         .width(220);
         let mut detail = column![].spacing(10).height(Fill);
         if let (Some(item), Some(preview)) = (self.item(), &self.preview) {
-            let tool = |label, panel| {
-                button(text(label).size(12))
-                    .style(if self.library_panel == Some(panel) {
-                        style::selected
-                    } else {
-                        style::quiet
-                    })
-                    .on_press(Message::LibraryPanel(panel))
+            let tool = |icon, label, panel| {
+                icon_button(
+                    icon,
+                    label,
+                    Some(Message::LibraryPanel(panel)),
+                    self.library_panel == Some(panel),
+                )
             };
             detail = detail.push(
                 row![
                     text(&item.manifest.name).size(18).width(Fill),
-                    tool("Adjust", LibraryPanel::Controls),
-                    tool("Display", LibraryPanel::Display),
-                    tool("Info", LibraryPanel::Details),
-                    button(if self.preview_paused { "Play" } else { "Pause" })
-                        .on_press(Message::PausePreview),
+                    tool(Icon::Adjust, "Adjust", LibraryPanel::Controls),
+                    tool(Icon::Display, "Display", LibraryPanel::Display),
+                    tool(Icon::Info, "Info", LibraryPanel::Details),
+                    self.playback_button(),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -1217,7 +1233,12 @@ impl App {
                             row![
                                 text(title).size(16),
                                 space().width(Fill),
-                                button("×").on_press(Message::LibraryPanel(panel))
+                                icon_button(
+                                    Icon::Close,
+                                    "Close panel",
+                                    Some(Message::LibraryPanel(panel)),
+                                    false
+                                )
                             ]
                             .align_y(iced::Center),
                             scrollable(content).height(Fill),
