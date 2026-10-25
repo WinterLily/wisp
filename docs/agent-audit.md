@@ -88,6 +88,27 @@ physical monitor hotplug, sustained performance, live audio capture, or actual
 operating-system file-picker interaction. Paths supplied by the command queue
 enter the same open/import/save/export implementations as dialog results.
 
+For a focused run, pass `--audit-commands /absolute/commands.json` to `wisp`.
+The JSON array uses snake_case command tags, for example:
+
+```json
+[
+  {"command":"page","value":"graph"},
+  {"command":"graph_new"},
+  {"command":"assert","state":{"page":"graph","graph_valid":true}},
+  {"command":"finish"}
+]
+```
+
+Commands wait for pending compilation and captures. Scripts must contain exactly
+one final `finish`; failed assertions emit `AUDIT_FAILED` and exit nonzero.
+The runner's retained command files show edit, path, recovery and capture examples.
+Standalone `--screenshot /absolute/capture.png` also works without `--frames`;
+`--screenshot-delay-ms` defaults to 1000. Checkpoint captures can inspect recoverable
+errors; a final capture retains unresolved startup/compilation failure verdicts.
+Frame-limited success requires the current preview generation to render without
+GPU errors, including when an older renderer remains visible after a rejected edit.
+
 The focused harness failure tests need no compositor:
 
 ```sh

@@ -89,20 +89,31 @@ Closing the app leaves the daemon running. Settings also offers explicit startup
 Clear unloads wallpapers but leaves the daemon available for future assignments.
 Session autostart is not installed automatically.
 
-This phase uses a file-based control channel, plus `wispd --list-outputs --json` for
-structured discovery. Socket command IPC, renderer acknowledgements/performance
-telemetry, pause/resume desktop policy, and crash supervision remain future work.
-The UI distinguishes **saved** assignments from daemon process status; running does
-not certify that a specific GPU replacement succeeded. Detailed errors are written
-to `daemon.log`, and daemon exit is reported by the UI's status polling. Monitor
-sizes are logical on Wayland and physical on Windows, with a separate scale field.
+The file-based control channel includes structured discovery through
+`wispd --list-outputs --json` and versioned observations through `--status-file`.
+Managed startup waits for initialization and first presentation on each active
+output. `daemon::running` still reports process-lock ownership; saved assignments
+are separate from the accepted configuration in `daemon::status`. A rejected
+reload advances `attempted_generation`, retains `accepted_generation` and output
+identities, and publishes its rejection. Detailed errors also go to `daemon.log`.
+Socket command IPC, performance telemetry, pause/resume desktop policy, and crash
+supervision remain future work. Monitor sizes are logical on Wayland and physical
+on Windows, with a separate scale field.
 
 New daemon options:
 
 ```sh
 wispd --list-outputs --json
 wispd --config /path/assignments.json --lock-file /path/daemon.lock
+wispd --config /path/assignments.json --lock-file /path/daemon.lock --status-file /path/status.json --stop-file /path/stop
 ```
+
+Status schema version 1 includes `pid`, `running`, `ready`, accepted/attempted
+generations, accepted `config`, `rejection`, and per-output `instance_id`,
+`assignment`, `initialized`, and `presented`. The optional stop file requests
+graceful shutdown and is removed on exit. Test harnesses should own their child
+process and use a disposable desktop; separate data directories alone do not
+isolate desktop outputs.
 
 `--lock-file` holds an OS advisory lock for the process lifetime. Both CLI and app
 must use the same lock path to share a managed instance. Independently launched
