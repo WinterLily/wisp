@@ -10,7 +10,8 @@ python3 tools/audit.py --compositor niri --integration-tests --output-dir agents
 
 `niri` starts a nested compositor on the caller's Wayland or X11 display. It does
 not use `--session`, import environment into systemd, or control the caller's
-compositor. Keep the nested window visible during keyboard verification. Python
+compositor. Keep the nested window visible throughout the audit: an occluding
+parent desktop can suspend Wayland frame callbacks and native progress. Python
 3.9+, Niri, `wtype`, `grim`, the normal native build dependencies, and a working
 Vulkan driver are required. Mesa software Vulkan is sufficient. The runner
 defaults to `WGPU_BACKEND=vulkan`; set it explicitly to test another supported
