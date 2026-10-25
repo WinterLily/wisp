@@ -1,6 +1,6 @@
 # Phase 8: Visual graph editor
 
-Open **Graph** in Wisp and choose **New**, **Open…**, or **From Easy Designer**.
+Open **Graph** in Wisp and choose **New graph**, **Open project…**, or **Continue from Designer**.
 The latter copies the current Easy Designer draft into an independent graph document.
 Existing standard compiler projects and saved Easy Designer projects open directly:
 
@@ -15,14 +15,14 @@ The GUI library and desktop assignments continue to use their existing controls.
 
 ## Editing
 
-- Search the node catalog and click a result to add it. All 25 currently implemented
+- Open **Add node**, search the catalog, and click a result to add it. All 25 currently implemented
   compiler operations are available, including explicit blur/materialize boundaries.
 - Drag a node to move it. Drag the empty canvas or middle-drag to pan; scroll to zoom.
   **Fit** shows the whole graph; **Arrange** restores dependency columns. Node positions are saved with the project.
 - Click an output dot, then an input dot to connect or replace that input. Socket
   labels show types; colors distinguish scalars, vectors, and colors. Right-click
   cancels a pending connection. Output nodes have no outgoing socket.
-- Select a node to edit its properties. Use **Set** or Enter to commit each text
+- Select a node and open **Properties** to edit it. Use **Set** or Enter to commit each text
   property; partially typed values remain in the field until committed. Color and
   vector values use bracketed components, for example `[0.2, 0.5, 0.8, 1]`.
   Float, integer, boolean, color, and vector constants/parameters are supported.
@@ -30,7 +30,7 @@ The GUI library and desktop assignments continue to use their existing controls.
 - Each Parameter node added to the graph creates a float declaration. Its `parameter`
   property can reference an existing declaration; default and optional scalar bounds
   are editable below it. Blank bounds mean unbounded. The compiler checks limits.
-- **Add image asset…** copies a PNG, JPEG, or WebP into the draft's asset collection.
+- **Project → Add image asset…** copies a PNG, JPEG, or WebP into the draft's asset collection.
   Select an Image node and choose an asset in its properties, then connect its UV input.
 - Use **×** next to an input to disconnect it, **Delete node** to remove a node and
   its incoming/outgoing connections, or **Use as output** to select an Output node.
@@ -51,6 +51,11 @@ concurrent graph mutations while compilation runs; compilation results carry a
 revision number so stale results cannot replace the current preview. Metadata and
 layout changes do not require shader compilation. This is full recompilation, not
 incremental shader/pass caching.
+
+The canvas has a small live preview; open **Preview** for playback controls and
+the compiler report. **Project** contains metadata, saving, export, and reopening.
+Only one panel opens at a time. **Focus** (F11) hides controls; Escape restores them.
+Escape also cancels a pending connection before closing panels.
 
 The live preview uses the existing `wisp-runtime` Iced widget. Failed compilation
 leaves the last valid preview visible and animated. GPU renderer replacement follows

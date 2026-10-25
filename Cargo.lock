@@ -4206,6 +4206,7 @@ dependencies = [
  "directories",
  "fs2",
  "iced",
+ "iced_wgpu",
  "image",
  "pollster",
  "rfd",

@@ -25,33 +25,44 @@ pub struct Preview {
     pub status: Arc<Mutex<Status>>,
 }
 impl Preview {
-    /// Fit the live render to its image, keeping the panel's height as a cap.
-    pub fn view<Message: 'static>(&self, max_height: f32) -> Element<'static, Message> {
-        let (width, height) = self
+    /// Use the source aspect ratio so opening a panel never stretches the image.
+    pub fn canvas<Message: 'static>(&self) -> Element<'static, Message> {
+        let dimensions = self
             .wallpaper
             .images()
             .first()
             .map(|image| image.dimensions())
             .unwrap_or((16, 9));
-        let source = Size::new(width as f32, height as f32);
-        let preview = self.clone();
-        responsive(move |available| {
-            let size = ContentFit::Contain.fit(
-                source,
-                Size::new(available.width, available.height.min(max_height)),
-            );
-            container(
-                Shader::new(preview.clone())
-                    .width(size.width)
-                    .height(size.height),
-            )
-            .center_x(Length::Fill)
+        fitted(self.clone(), dimensions)
+    }
+
+    pub fn view<Message: 'static>(&self, max_height: f32) -> Element<'static, Message> {
+        container(self.canvas())
+            .width(Length::Fill)
+            .height(max_height)
             .into()
-        })
-        .height(Length::Shrink)
-        .into()
     }
 }
+
+/// Keep authoring dimensions explicit because layer assets can have different sizes.
+pub(crate) fn fitted<'a, Message: 'a>(
+    preview: Preview,
+    dimensions: (u32, u32),
+) -> Element<'a, Message> {
+    let source = Size::new(dimensions.0.max(1) as f32, dimensions.1.max(1) as f32);
+    responsive(move |available| {
+        let size = ContentFit::Contain.fit(source, available);
+        container(
+            Shader::new(preview.clone())
+                .width(size.width)
+                .height(size.height),
+        )
+        .center(Length::Fill)
+        .into()
+    })
+    .into()
+}
+
 pub struct Primitive {
     preview: Preview,
     mouse: [f32; 2],

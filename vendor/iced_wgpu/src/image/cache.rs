@@ -234,8 +234,13 @@ impl Cache {
 
         const MAX_SYNC_SIZE: usize = 2 * 1024 * 1024;
 
+        // Dynamic RGBA handles can change every frame. Deferring their upload
+        // would leave a frame without an image whenever the handle is replaced.
         // TODO: Concurrent Wasm support
-        if image.len() < MAX_SYNC_SIZE || cfg!(target_arch = "wasm32") {
+        if matches!(handle, core::image::Handle::Rgba { .. })
+            || image.len() < MAX_SYNC_SIZE
+            || cfg!(target_arch = "wasm32")
+        {
             let entry = self.atlas.upload(
                 device,
                 encoder,

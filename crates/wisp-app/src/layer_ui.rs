@@ -10,8 +10,17 @@ use iced::{
     },
 };
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::ui) enum LayerTab {
+    Adjust,
+    #[default]
+    Motion,
+    Mask,
+}
+
 #[derive(Clone)]
 pub(in crate::ui) enum LayerMessage {
+    Tab(LayerTab),
     Enable,
     Select(usize),
     Import(Option<(usize, bool)>),
@@ -135,6 +144,10 @@ impl App {
     }
     pub(super) fn layer_update(&mut self, message: LayerMessage) -> Task<Message> {
         use LayerMessage::*;
+        if let Tab(tab) = &message {
+            self.designer.layer_tab = *tab;
+            return Task::none();
+        }
         let painting = matches!(
             message,
             Paint(..)
@@ -367,31 +380,39 @@ impl App {
         }
         Task::none()
     }
-    pub(super) fn layers_view(&self, stack: &Stack) -> Element<'_, Message> {
+    pub(super) fn layers_view<'a>(&'a self, stack: &'a Stack) -> Element<'a, Message> {
         use LayerMessage::*;
         let action = |m| Message::Designer(DesignerMessage::Layer(m));
         let enabled = !self.busy;
         let i = self.designer.layer.min(stack.layers.len() - 1);
         let l = &stack.layers[i];
+        let tab = self.designer.layer_tab;
         let mut panel = column![
-            text("Image layers · front to back").size(20),
-            button("Add image layer…").on_press_maybe(
-                (enabled && stack.layers.len() < 6).then_some(action(Import(None)))
-            )
+            row![
+                text("Front to back").size(11),
+                space().width(Fill),
+                button("+ Image").on_press_maybe(
+                    (enabled && stack.layers.len() < 6).then_some(action(Import(None)))
+                )
+            ]
+            .align_y(iced::Center),
         ]
-        .spacing(8);
+        .spacing(10);
         for (index, layer) in stack.layers.iter().enumerate().rev() {
             panel = panel.push(
                 row![
                     checkbox(layer.visible).on_toggle(move |v| action(Visible(index, v))),
-                    button(text(format!(
-                        "{}{}",
-                        if i == index { "● " } else { "" },
-                        layer.name
-                    )))
-                    .on_press_maybe(enabled.then_some(action(Select(index))))
+                    button(text(&layer.name).size(14))
+                        .width(Fill)
+                        .style(if i == index {
+                            style::selected
+                        } else {
+                            style::quiet
+                        })
+                        .on_press_maybe(enabled.then_some(action(Select(index)))),
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::Center),
             );
         }
         panel = panel.push(
@@ -399,27 +420,64 @@ impl App {
                 button("Forward").on_press_maybe(
                     (enabled && i + 1 < stack.layers.len()).then_some(action(Move(true)))
                 ),
-                button("Backward")
-                    .on_press_maybe((enabled && i > 0).then_some(action(Move(false)))),
+                button("Back").on_press_maybe((enabled && i > 0).then_some(action(Move(false)))),
                 button("Remove")
-                    .on_press_maybe((enabled && stack.layers.len() > 1).then_some(action(Remove)))
+                    .on_press_maybe((enabled && stack.layers.len() > 1).then_some(action(Remove))),
             ]
-            .spacing(6),
+            .spacing(2),
         );
-        panel = panel
-            .push(text_input("Layer name", &l.name).on_input(move |v| action(Name(v))))
-            .push(pick_list(
-                wisp_ir::BlendMode::ALL.as_slice(),
-                Some(l.blend),
-                move |v| action(Blend(v)),
-            ))
-            .push(text("Layer effect").size(18))
-            .push(pick_list(
-                crate::layers::Effect::ALL.as_slice(),
-                Some(l.effect),
-                move |v| action(Effect(v)),
-            ));
+        let tab_button = |label, value| {
+            button(text(label).size(12))
+                .width(Fill)
+                .style(if tab == value {
+                    style::selected
+                } else {
+                    style::quiet
+                })
+                .on_press(action(Tab(value)))
+        };
+        panel = panel.push(iced::widget::rule::horizontal(1)).push(
+            row![
+                tab_button("Adjust", LayerTab::Adjust),
+                tab_button("Motion", LayerTab::Motion),
+                tab_button("Mask", LayerTab::Mask)
+            ]
+            .spacing(4),
+        );
+        if tab == LayerTab::Adjust {
+            panel = panel
+                .push(text_input("Layer name", &l.name).on_input(move |v| action(Name(v))))
+                .push(
+                    pick_list(
+                        wisp_ir::BlendMode::ALL.as_slice(),
+                        Some(l.blend),
+                        move |v| action(Blend(v)),
+                    )
+                    .width(Fill),
+                );
+        }
+        if tab == LayerTab::Motion {
+            panel = panel.push(
+                pick_list(
+                    crate::layers::Effect::ALL.as_slice(),
+                    Some(l.effect),
+                    move |v| action(Effect(v)),
+                )
+                .width(Fill),
+            );
+            if l.effect == crate::layers::Effect::None {
+                panel = panel.push(text("Choose an effect to bring this layer to life.").size(13));
+            }
+        }
         for c in crate::layers::CONTROLS {
+            let transform =
+                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&c.0);
+            if (tab == LayerTab::Adjust && !transform)
+                || (tab == LayerTab::Motion && (transform || c.0 == "feather"))
+                || (tab == LayerTab::Mask && c.0 != "feather")
+            {
+                continue;
+            }
             let weather = matches!(
                 l.effect,
                 crate::layers::Effect::Droplets
@@ -448,92 +506,122 @@ impl App {
             {
                 continue;
             }
-            panel = panel
-                .push(text(format!("{}  {:.3}", c.1, l.value(c.0))).size(13))
-                .push(
-                    slider(c.2..=c.3, l.value(c.0), move |v| {
-                        action(Value(c.0.into(), v))
-                    })
+            panel = panel.push(
+                column![
+                    row![
+                        text(c.1).size(12),
+                        space().width(Fill),
+                        text(format!("{:.2}", l.value(c.0))).size(12)
+                    ]
+                    .spacing(8),
+                    slider(c.2..=c.3, l.value(c.0), move |v| action(Value(
+                        c.0.into(),
+                        v
+                    )))
                     .step((c.3 - c.2) / 200.)
                     .on_release(action(Commit)),
-                );
+                ]
+                .spacing(7),
+            );
         }
-        if l.effect == crate::layers::Effect::Displacement {
+        if tab == LayerTab::Motion && l.effect == crate::layers::Effect::Displacement {
             panel = panel.push(
                 button("Choose displacement map…")
                     .on_press_maybe(enabled.then_some(action(Import(Some((i, true)))))),
             );
         }
-        panel = panel
-            .push(text("Mask · white affects, black anchors").size(18))
-            .push(
-                row![
+        if tab == LayerTab::Mask {
+            panel = panel.push(text("Paint where this layer moves or appears.").size(13));
+            if let Some(m) = &l.mask {
+                panel = panel
+                    .push(
+                        button("Paint mask…")
+                            .style(iced_button::primary)
+                            .width(Fill)
+                            .on_press(action(Expand(true))),
+                    )
+                    .push(
+                        checkbox(m.invert)
+                            .label("Invert")
+                            .on_toggle(move |v| action(MaskFlag(0, v))),
+                    )
+                    .push(
+                        checkbox(m.composition)
+                            .label("Affect layer opacity")
+                            .on_toggle(move |v| action(MaskFlag(1, v))),
+                    )
+                    .push(
+                        checkbox(m.effect)
+                            .label("Affect motion strength")
+                            .on_toggle(move |v| action(MaskFlag(2, v))),
+                    )
+                    .push(
+                        button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true)))),
+                    )
+                    .push(
+                        button("Clear to black")
+                            .on_press_maybe(enabled.then_some(action(Mask(false)))),
+                    )
+                    .push(
+                        button("Remove mask").on_press_maybe(enabled.then_some(action(ClearMask))),
+                    );
+            } else {
+                panel = panel.push(
+                    button("Create a mask")
+                        .style(iced_button::primary)
+                        .width(Fill)
+                        .on_press_maybe(enabled.then_some(action(Mask(false)))),
+                );
+            }
+            panel = panel
+                .push(
                     button("Import mask…")
                         .on_press_maybe(enabled.then_some(action(Import(Some((i, false)))))),
-                    button("New black").on_press_maybe(enabled.then_some(action(Mask(false)))),
-                    button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true))))
-                ]
-                .spacing(6),
-            );
-        if let Some(m) = &l.mask {
-            panel = panel.push(checkbox(m.invert).label("Invert mask").on_toggle(move |v| action(MaskFlag(0, v))))
-                .push(checkbox(m.composition).label("Mask layer opacity").on_toggle(move |v| action(MaskFlag(1, v))))
-                .push(checkbox(m.effect).label("Mask effect strength").on_toggle(move |v| action(MaskFlag(2, v))))
-                .push(button("Remove mask").on_press_maybe(enabled.then_some(action(ClearMask))))
-                .push(text("Paint selected regions in teal; erase to anchor them. Wallpaper preview updates every two seconds while editing.").size(13))
-                .push(self.paint_controls())
-                .push(button("Expand mask editor").on_press(action(Expand(true))))
-                .push(self.paint_canvas(320.into()));
+                )
+                .push(text("White reveals · Black anchors").size(11));
         }
         panel.into()
     }
     fn paint_controls(&self) -> Element<'_, Message> {
         use LayerMessage::*;
         let action = |message| Message::Designer(DesignerMessage::Layer(message));
-        let mut controls = column![
-            row![
-                pick_list(
-                    PaintTool::ALL.as_slice(),
-                    Some(self.designer.paint_tool),
-                    move |tool| action(Tool(tool))
-                ),
-                checkbox(self.designer.erase)
-                    .label("Erase to black")
-                    .on_toggle(move |value| action(Erase(value)))
-            ]
-            .spacing(12)
-        ]
-        .spacing(8);
+        let mut tools = row![pick_list(
+            PaintTool::ALL.as_slice(),
+            Some(self.designer.paint_tool),
+            move |tool| action(Tool(tool))
+        )]
+        .spacing(12)
+        .align_y(iced::Center);
+        if self.designer.paint_tool != PaintTool::PolygonalLasso {
+            tools = tools.push(text("Size").size(12)).push(
+                slider(0.005..=0.25, self.designer.brush.max(0.005), move |value| {
+                    action(Brush(value))
+                })
+                .width(140)
+                .step(0.005),
+            );
+            if self.designer.paint_tool == PaintTool::Airbrush {
+                tools = tools
+                    .push(
+                        text(format!("Flow {:.0}%", self.designer.airbrush_flow() * 100.)).size(12),
+                    )
+                    .push(
+                        slider(0.01..=0.5, self.designer.airbrush_flow(), move |value| {
+                            action(Flow(value))
+                        })
+                        .width(140)
+                        .step(0.01),
+                    );
+            }
+        }
+        let mut controls = column![tools].spacing(8).padding([0, 8]);
         if self.designer.paint_tool == PaintTool::PolygonalLasso {
             controls = controls
-                .push(text("Click corners; click the first point or Enter to fill. Backspace undoes; Esc cancels.").size(13))
+                .push(text("Click corners; click the first point or Enter to fill. Backspace undoes; Esc cancels.").size(11))
                 .push(row![
                     button("Fill polygon").on_press_maybe((self.designer.lasso_vertices.len() >= 3).then_some(action(LassoFinish))),
                     button("Cancel polygon").on_press_maybe((!self.designer.lasso_vertices.is_empty()).then_some(action(LassoCancel)))
                 ].spacing(8));
-        } else {
-            controls = controls.push(
-                row![
-                    text("Brush radius").size(13),
-                    slider(0.005..=0.25, self.designer.brush.max(0.005), move |value| {
-                        action(Brush(value))
-                    })
-                    .step(0.005)
-                ]
-                .spacing(12),
-            );
-            if self.designer.paint_tool == PaintTool::Airbrush {
-                controls = controls.push(
-                    row![
-                        text(format!("Flow {:.0}%", self.designer.airbrush_flow() * 100.)).size(13),
-                        slider(0.01..=0.5, self.designer.airbrush_flow(), move |value| {
-                            action(Flow(value))
-                        })
-                        .step(0.01)
-                    ]
-                    .spacing(12),
-                );
-            }
         }
         controls.into()
     }
@@ -554,17 +642,45 @@ impl App {
     }
     pub(super) fn expanded_painter(&self) -> Element<'_, Message> {
         let action = |m| Message::Designer(DesignerMessage::Layer(m));
+        let canvas = self.paint_canvas(Fill);
+        if self.focus_mode {
+            return iced::widget::stack![
+                canvas,
+                container(button("Show controls · F11").on_press(Message::Focus))
+                    .padding(12)
+                    .align_right(Fill),
+            ]
+            .into();
+        }
         column![
             row![
-                text("Paint mask").size(26),
+                button("Done").on_press(action(LayerMessage::Expand(false))),
+                text("Paint mask").size(15),
                 space().width(Fill),
-                button("Back to layers").on_press(action(LayerMessage::Expand(false)))
+                button("Paint")
+                    .style(if !self.designer.erase {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press(action(LayerMessage::Erase(false))),
+                button("Erase")
+                    .style(if self.designer.erase {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press(action(LayerMessage::Erase(true))),
+                button("Focus").on_press(Message::Focus),
             ]
-            .spacing(12),
+            .spacing(10)
+            .align_y(iced::Center)
+            .padding([4, 8]),
             self.paint_controls(),
-            self.paint_canvas(Fill)
+            canvas,
+            text("Teal shows the selected area · Live preview updates as you paint").size(11),
         ]
-        .spacing(12)
+        .spacing(8)
         .height(Fill)
         .into()
     }
@@ -576,12 +692,20 @@ impl canvas::Program<Message> for MaskBackground<'_> {
         &self,
         _: &(),
         renderer: &iced::Renderer,
-        _: &iced::Theme,
+        theme: &iced::Theme,
         bounds: Rectangle,
         _: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::from_rgb8(30, 35, 45));
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            if theme.extended_palette().is_dark {
+                Color::from_rgb8(18, 19, 21)
+            } else {
+                Color::from_rgb8(224, 223, 220)
+            },
+        );
         let rect = fitted_image_rect(self.0.paint_dimensions, bounds.size());
         if let Some(source) = &self.0.paint_source {
             frame.draw_image(rect, source);
@@ -1156,6 +1280,166 @@ mod live_paint_tests {
         let _ = app.layer_update(LayerMessage::LassoPoint([0.8, 0.8]));
         app.refresh_painter();
         assert!(app.designer.lasso_vertices.is_empty());
+    }
+
+    fn painter_screenshot(
+        app: &App,
+        renderer: &mut iced_wgpu::Renderer,
+        theme: &iced::Theme,
+    ) -> Vec<u8> {
+        use iced_wgpu::core::{
+            Layout, Renderer as _, layout, renderer as core_renderer, widget::Tree,
+        };
+        let size = iced::Size::new(128., 128.);
+        let bounds = Rectangle::new(Point::ORIGIN, size);
+        let mut painter = app.paint_canvas(Fill);
+        let mut tree = Tree::new(painter.as_widget());
+        let layout = painter.as_widget_mut().layout(
+            &mut tree,
+            renderer,
+            &layout::Limits::new(iced::Size::ZERO, size),
+        );
+        renderer.reset(bounds);
+        painter.as_widget().draw(
+            &tree,
+            renderer,
+            theme,
+            &core_renderer::Style {
+                text_color: Color::WHITE,
+            },
+            Layout::new(&layout),
+            mouse::Cursor::Unavailable,
+            &bounds,
+        );
+        let viewport =
+            iced_wgpu::graphics::Viewport::with_physical_size(iced::Size::new(128, 128), 1.);
+        renderer.screenshot(&viewport, Color::BLACK)
+    }
+
+    #[test]
+    #[ignore = "requires a working graphics adapter"]
+    fn continuous_strokes_render_the_latest_mask_on_every_frame() {
+        use canvas::Program;
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let gpu = pollster::block_on(wisp_runtime::Gpu::new(&instance, None)).unwrap();
+        let engine = iced_wgpu::Engine::new(
+            &gpu.adapter,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            None,
+            iced_wgpu::graphics::Shell::headless(),
+        );
+        let mut renderer = iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(16.));
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(dir.path().join("library"))).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.busy = false;
+        app.designer = Designer {
+            brush: 0.06,
+            paint_dimensions: [1024, 1024],
+            paint_source: Some(image::Handle::from_rgba(1, 1, vec![60, 70, 80, 255])),
+            paint_pixels: Some(::image::GrayImage::new(1024, 1024)),
+            ..Default::default()
+        };
+        app.refresh_mask_overlay(None);
+        let size = iced::Size::new(128., 128.);
+        let bounds = Rectangle::new(Point::ORIGIN, size);
+        let mut state = PaintState::default();
+
+        for erase in [false, true] {
+            let _ = app.layer_update(LayerMessage::Erase(erase));
+            for step in 0..12 {
+                let position = Point::new(16. + step as f32 * 8., 64.);
+                let event = canvas::Event::Mouse(if step == 0 {
+                    mouse::Event::ButtonPressed(mouse::Button::Left)
+                } else {
+                    mouse::Event::CursorMoved { position }
+                });
+                let action = MaskCanvas {
+                    designer: &app.designer,
+                    enabled: true,
+                }
+                .update(
+                    &mut state,
+                    &event,
+                    bounds,
+                    mouse::Cursor::Available(position),
+                )
+                .unwrap();
+                let Message::Designer(DesignerMessage::Layer(message)) =
+                    action.into_inner().0.unwrap()
+                else {
+                    panic!("expected a paint message");
+                };
+                let _ = app.layer_update(message);
+                let pixels = painter_screenshot(&app, &mut renderer, &iced::Theme::Dark);
+                for painted_step in 0..=step {
+                    let offset = (64 * 128 + 16 + painted_step * 8) * 4;
+                    let pixel = &pixels[offset..offset + 4];
+                    if erase {
+                        assert!(pixel[1].abs_diff(70) <= 1, "erase frame {step}: {pixel:?}");
+                    } else {
+                        assert!(pixel[1] > 100, "paint frame {step}: {pixel:?}");
+                    }
+                }
+            }
+            let _ = MaskCanvas {
+                designer: &app.designer,
+                enabled: true,
+            }
+            .update(
+                &mut state,
+                &canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                bounds,
+                mouse::Cursor::Unavailable,
+            );
+            assert!(state.last.is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a working graphics adapter"]
+    fn lasso_outlines_remain_visible_above_images_in_both_themes() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let gpu = pollster::block_on(wisp_runtime::Gpu::new(&instance, None)).unwrap();
+        let engine = iced_wgpu::Engine::new(
+            &gpu.adapter,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            None,
+            iced_wgpu::graphics::Shell::headless(),
+        );
+        let mut renderer = iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(16.));
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(dir.path().join("library"))).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.designer = Designer {
+            paint_dimensions: [1024, 1024],
+            paint_source: Some(image::Handle::from_rgba(1, 1, vec![60, 70, 80, 255])),
+            paint_pixels: Some(::image::GrayImage::new(1024, 1024)),
+            paint_tool: PaintTool::PolygonalLasso,
+            lasso_vertices: vec![[0.25, 0.25], [0.75, 0.25], [0.75, 0.75]],
+            ..Default::default()
+        };
+        app.refresh_mask_overlay(None);
+        for theme in [iced::Theme::Dark, iced::Theme::Light] {
+            let pixels = painter_screenshot(&app, &mut renderer, &theme);
+            let outline = (48 * 128 + 96) * 4;
+            assert!(
+                pixels[outline + 1] > 100,
+                "outline must remain above the image"
+            );
+            let interior = (48 * 128 + 64) * 4;
+            assert_eq!(&pixels[interior..interior + 4], &[60, 70, 80, 255]);
+            let corner = (32 * 128 + 32) * 4;
+            assert!(
+                pixels[corner + 1] > 100,
+                "the first corner must remain visible"
+            );
+        }
     }
 
     #[test]
