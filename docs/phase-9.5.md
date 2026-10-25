@@ -25,26 +25,27 @@ parts; automatic segmentation and skeletal/strand physics are outside this phase
 
 ## Authoring workflow
 
-1. Choose an image on Create, then select **Add layers and effects**.
-2. **Add image layer…** imports a PNG, JPEG, or WebP above existing layers. The list
-   displays front to back. Select a layer to edit it; Forward/Backward changes its
+1. Choose an image on Create, then open **Layers → Add layers & effects**.
+2. **+ Image** imports a PNG, JPEG, or WebP above existing layers. The list
+   displays front to back. Select a layer to edit it; Forward/Back changes its
    order, the checkbox changes visibility, and Remove deletes it from the stack.
-3. Set opacity and Alpha/Add/Multiply/Screen/Overlay blending. Each layer has its
+3. Use **Adjust** for opacity and Alpha/Add/Multiply/Screen/Overlay blending. Each layer has its
    own X/Y position, X/Y scale, rotation, and X/Y pivot. Positions and pivots use
    normalized image coordinates; rotations are degrees. Images outside their
    transformed bounds are transparent. Composition uses straight alpha and linear
    RGB, including partially transparent backgrounds.
-4. Choose Hair or Clothing. A black mask is created automatically. Paint white on
+4. Use **Motion** to choose Hair or Clothing. A black mask is created automatically. Open
+   **Mask → Paint mask…** and paint white on
    hair ends or cloth folds; leave the face and attachment regions black. The brush
    editor shows the untransformed layer with a teal selection overlay. Strokes
-   appear immediately while dragging; Erase paints black. **Expand mask editor**
-   fills the workspace with the painting surface, with **Back to layers** to return.
+   appear immediately while dragging; Erase paints black. The painter
+   fills the workspace, with **Done** to return to layers.
    The image keeps its aspect ratio and the brush stays circular. Continuous strokes interpolate between pointer samples. Brush radius,
    feathering, inversion, and mask routing are editable. A black effect mask causes
    no deformation at those pixels. Whole-scene parallax/light effects still operate
    independently; use Clean image for a completely stationary base scene.
-5. Masks may be imported, created black, or filled white. **Mask layer opacity**
-   routes coverage to composition; **Mask effect strength** routes it to the
+5. The **Mask** tab supports importing, creating, clearing, and filling masks. **Affect layer opacity**
+   routes coverage to composition; **Affect motion strength** routes it to the
    selected effect. Both may be enabled. Imported RGB masks convert to grayscale,
    including source alpha. Interactive paint edits use a retained 1024×1024 grayscale raster; the first
    stroke resamples an imported mask to this size. The source texture stays resident;

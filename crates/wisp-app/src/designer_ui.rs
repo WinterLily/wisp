@@ -5,8 +5,16 @@ use crate::designer::{CONTROLS, Draft, Preset};
 use iced::widget::column;
 use layer_ui::LayerMessage;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DesignerPanel {
+    Layers,
+    Effects,
+    Project,
+}
+
 #[derive(Clone)]
 pub(super) enum DesignerMessage {
+    Panel(DesignerPanel),
     Layer(LayerMessage),
     Browse(bool),
     Open(PathBuf),
@@ -24,6 +32,8 @@ pub(super) enum DesignerMessage {
 }
 #[derive(Default)]
 pub(super) struct Designer {
+    pub panel: Option<DesignerPanel>,
+    pub layer_tab: layer_ui::LayerTab,
     pub draft: Option<Arc<Draft>>,
     pub preview: Option<Preview>,
     pub report: String,
@@ -56,6 +66,9 @@ impl App {
     pub(super) fn designer_update(&mut self, message: DesignerMessage) -> Task<Message> {
         use DesignerMessage::*;
         match message {
+            Panel(panel) => {
+                self.designer.panel = (self.designer.panel != Some(panel)).then_some(panel);
+            }
             Layer(m) => return self.layer_update(m),
             PaintTick(now) if self.designer.paint_due(now) && !self.busy => {
                 return self.compile_design();
@@ -354,135 +367,258 @@ impl App {
         )
     }
     pub(super) fn designer_view(&self) -> Element<'_, Message> {
+        use DesignerMessage::*;
+        use DesignerPanel as PanelKind;
+        let action = |m| Message::Designer(m);
         if self.designer.paint_expanded {
             return self.expanded_painter();
         }
-        use DesignerMessage::*;
-        let action = |m| Message::Designer(m);
-        let mut controls = column![
-            text("Easy Designer").size(30),
-            text("Layer images, paint motion masks, and add animated effects."),
-            row![
-                button("Choose image")
-                    .on_press_maybe((!self.busy).then_some(action(Browse(false)))),
-                button("Open draft").on_press_maybe((!self.busy).then_some(action(Browse(true))))
+        let Some(draft) = &self.designer.draft else {
+            let welcome = column![
+                text("Start with an image.").size(32),
+                text("Give it a little motion. Make it your own.")
+                    .size(15)
+                    .style(|t| text::Style {
+                        color: Some(style::muted(t))
+                    }),
+                space().height(12),
+                row![
+                    button("Choose image…")
+                        .style(iced_button::primary)
+                        .on_press_maybe((!self.busy).then_some(action(Browse(false)))),
+                    button("Open project…")
+                        .on_press_maybe((!self.busy).then_some(action(Browse(true))))
+                ]
+                .spacing(12),
+                text("PNG, JPEG or WebP").size(12).style(|t| text::Style {
+                    color: Some(style::muted(t))
+                }),
             ]
-            .spacing(10),
-            text_input("Image path or saved project folder", &self.import_path)
-                .on_input(Message::ImportPath),
-            button("Open path").on_press_maybe(
-                (!self.busy && !self.import_path.trim().is_empty())
-                    .then(|| action(Open(PathBuf::from(self.import_path.trim()))))
-            )
-        ]
-        .spacing(14);
-        if let Some(draft) = &self.designer.draft {
-            let d = &draft.design;
-            controls = controls.push(
-                text(if self.designer.dirty {
-                    "Draft · unsaved changes"
-                } else {
-                    "Draft saved"
-                })
-                .size(13),
-            );
-            controls = controls
-                .push(text_input("Wallpaper name", &d.name).on_input(move |v| action(Name(v))));
-            controls =
-                controls.push(text_input("Author", &d.author).on_input(move |v| action(Author(v))));
-            if let Some(stack) = &draft.layers {
-                controls = controls.push(self.layers_view(stack));
-            } else {
-                controls =
-                    controls.push(button("Add layers and effects").on_press_maybe(
-                        (!self.busy).then_some(action(Layer(LayerMessage::Enable))),
-                    ));
-            }
-            controls = controls.push(text("Whole scene effects").size(20));
-            controls = controls.push(text("Start from a preset").size(18)).push(
-                pick_list(
-                    crate::designer::Preset::ALL.as_slice(),
-                    None::<crate::designer::Preset>,
-                    move |p| action(DesignerMessage::Preset(p)),
-                )
-                .placeholder("Choose a preset"),
-            );
-            for (index, label, value) in [
-                (0, "Mouse parallax", d.parallax),
-                (1, "Breathing light", d.pulse),
-                (2, "Soft blur", d.blur),
-                (3, "Vignette", d.vignette),
-            ] {
-                controls = controls.push(
-                    checkbox(value)
-                        .label(label)
-                        .on_toggle(move |v| Message::Designer(Toggle(index, v))),
-                );
-            }
-            for c in CONTROLS {
-                if (c.id == "parallax" && !d.parallax)
-                    || (["pulse", "speed"].contains(&c.id) && !d.pulse)
-                    || (c.id == "radius" && !d.blur)
-                    || (c.id == "vignette" && !d.vignette)
-                {
-                    continue;
-                }
-                controls = controls
-                    .push(text(format!("{}  {:.2}", c.label, d.values[c.id])))
-                    .push(
-                        slider(c.min..=c.max, d.values[c.id], move |v| {
-                            Message::Designer(Value(c.id.into(), v))
-                        })
-                        .step((c.max - c.min) / 200.),
-                    );
-            }
-            if let Err(error) = d.validate() {
-                controls = controls
-                    .push(text(error.to_string()).color(iced::Color::from_rgb(1., 0.4, 0.4)));
-            }
-            let ready = !self.busy
-                && self.designer.valid
-                && d.validate().is_ok()
-                && self
-                    .designer
-                    .preview
-                    .as_ref()
-                    .is_some_and(|p| p.status.lock().unwrap().error.is_none());
-            controls = controls
-                .push(
-                    button("Save editable project…")
-                        .on_press_maybe(ready.then_some(action(Save(true)))),
-                )
-                .push(button("Save to library").on_press_maybe(ready.then_some(action(Install))))
-                .push(button("Export .wisp…").on_press_maybe(ready.then_some(action(Save(false)))));
-        }
-        let mut preview = column![
-            row![
-                text("Live preview").size(24),
-                space().width(Fill),
-                button(if self.preview_paused { "Play" } else { "Pause" })
-                    .on_press(Message::PausePreview)
-            ]
-            .spacing(10)
-        ]
-        .spacing(16);
-        if let Some(p) = &self.designer.preview {
-            preview = preview
-                .push(p.view(380.0))
-                .push(text(&self.designer.report).size(13));
-            if let Some(d) = &self.designer.draft {
-                preview = preview.push(text(format!("Source: {} × {} · Controls become wallpaper defaults when saved or exported.", d.dimensions.0, d.dimensions.1)).size(13));
-            }
+            .spacing(14)
+            .align_x(iced::Center);
+            return container(welcome).center(Fill).style(style::stage).into();
+        };
+        let d = &draft.design;
+        let stage: Element<'_, Message> = if let Some(p) = &self.designer.preview {
+            crate::preview::fitted(p.clone(), draft.dimensions)
         } else {
-            preview = preview.push(text("Choose a PNG, JPEG or WebP image to begin."));
+            container(text("Preparing canvas…").size(14))
+                .center(Fill)
+                .into()
+        };
+        let stage = container(stage)
+            .padding(24)
+            .width(Fill)
+            .height(Fill)
+            .style(style::stage);
+        if self.focus_mode {
+            return iced::widget::stack![
+                stage,
+                container(button("Show controls · Esc").on_press(Message::Dismiss))
+                    .padding(12)
+                    .align_right(Fill),
+            ]
+            .into();
         }
-        row![
-            scrollable(controls).width(FillPortion(2)),
-            scrollable(preview).width(FillPortion(3))
+        let tool = |label, panel| {
+            button(text(label).size(13))
+                .style(if self.designer.panel == Some(panel) {
+                    style::selected
+                } else {
+                    style::quiet
+                })
+                .on_press(action(Panel(panel)))
+        };
+        let toolbar = row![
+            text(if d.name.is_empty() {
+                "Untitled"
+            } else {
+                &d.name
+            })
+            .size(15),
+            text(if self.designer.dirty { "· edited" } else { "" })
+                .size(11)
+                .style(|t| text::Style {
+                    color: Some(style::muted(t))
+                }),
+            space().width(Fill),
+            tool("Layers", PanelKind::Layers),
+            tool("Effects", PanelKind::Effects),
+            tool("Project", PanelKind::Project),
+            button(if self.preview_paused { "Play" } else { "Pause" })
+                .on_press(Message::PausePreview),
+            button("Focus").on_press(Message::Focus),
         ]
-        .spacing(24)
-        .height(Fill)
-        .into()
+        .align_y(iced::Center)
+        .spacing(4)
+        .padding([4, 8]);
+        let mut workspace = row![stage].spacing(8).height(Fill);
+        if let Some(panel) = self.designer.panel {
+            let title = match panel {
+                PanelKind::Layers => "Layers",
+                PanelKind::Effects => "Scene effects",
+                PanelKind::Project => "Project",
+            };
+            let mut controls = column![].spacing(14);
+            match panel {
+                PanelKind::Layers => {
+                    if let Some(stack) = &draft.layers {
+                        controls = controls.push(self.layers_view(stack));
+                    } else {
+                        controls = controls
+                            .push(
+                                text("Build up your scene with images, motion and painted masks.")
+                                    .size(14),
+                            )
+                            .push(
+                                button("Add layers & effects")
+                                    .style(iced_button::primary)
+                                    .on_press_maybe(
+                                        (!self.busy).then_some(action(Layer(LayerMessage::Enable))),
+                                    ),
+                            );
+                    }
+                }
+                PanelKind::Effects => {
+                    controls = controls.push(
+                        pick_list(
+                            crate::designer::Preset::ALL.as_slice(),
+                            None::<crate::designer::Preset>,
+                            move |p| action(Preset(p)),
+                        )
+                        .placeholder("Start with a preset")
+                        .width(Fill),
+                    );
+                    for (index, label, value) in [
+                        (0, "Mouse parallax", d.parallax),
+                        (1, "Breathing light", d.pulse),
+                        (2, "Soft blur", d.blur),
+                        (3, "Vignette", d.vignette),
+                    ] {
+                        controls = controls.push(
+                            checkbox(value)
+                                .label(label)
+                                .on_toggle(move |v| action(Toggle(index, v))),
+                        );
+                    }
+                    for c in CONTROLS {
+                        if (c.id == "parallax" && !d.parallax)
+                            || (["pulse", "speed"].contains(&c.id) && !d.pulse)
+                            || (c.id == "radius" && !d.blur)
+                            || (c.id == "vignette" && !d.vignette)
+                        {
+                            continue;
+                        }
+                        controls = controls.push(
+                            column![
+                                row![
+                                    text(c.label).size(12),
+                                    space().width(Fill),
+                                    text(format!("{:.2}", d.values[c.id])).size(12)
+                                ],
+                                slider(c.min..=c.max, d.values[c.id], move |v| action(Value(
+                                    c.id.into(),
+                                    v
+                                )))
+                                .step((c.max - c.min) / 200.),
+                            ]
+                            .spacing(8),
+                        );
+                    }
+                }
+                PanelKind::Project => {
+                    controls = controls
+                        .push(text("Name").size(12))
+                        .push(
+                            text_input("Wallpaper name", &d.name)
+                                .on_input(move |v| action(Name(v))),
+                        )
+                        .push(text("Author").size(12))
+                        .push(text_input("Author", &d.author).on_input(move |v| action(Author(v))));
+                    if let Err(error) = d.validate() {
+                        controls = controls.push(
+                            text(error.to_string())
+                                .size(12)
+                                .color(iced::Color::from_rgb(0.9, 0.45, 0.45)),
+                        );
+                    }
+                    let ready = !self.busy
+                        && self.designer.valid
+                        && d.validate().is_ok()
+                        && self
+                            .designer
+                            .preview
+                            .as_ref()
+                            .is_some_and(|p| p.status.lock().unwrap().error.is_none());
+                    controls = controls
+                        .push(
+                            button("Save project…")
+                                .style(iced_button::primary)
+                                .width(Fill)
+                                .on_press_maybe(ready.then_some(action(Save(true)))),
+                        )
+                        .push(
+                            button("Save to library")
+                                .width(Fill)
+                                .on_press_maybe(ready.then_some(action(Install))),
+                        )
+                        .push(
+                            button("Export wallpaper…")
+                                .width(Fill)
+                                .on_press_maybe(ready.then_some(action(Save(false)))),
+                        )
+                        .push(iced::widget::rule::horizontal(1))
+                        .push(
+                            row![
+                                button("New image…")
+                                    .on_press_maybe((!self.busy).then_some(action(Browse(false)))),
+                                button("Open…")
+                                    .on_press_maybe((!self.busy).then_some(action(Browse(true)))),
+                            ]
+                            .spacing(4),
+                        )
+                        .push(
+                            text_input("Image or project path", &self.import_path)
+                                .on_input(Message::ImportPath)
+                                .on_submit(action(Open(PathBuf::from(self.import_path.trim())))),
+                        )
+                        .push(
+                            button("Open path").on_press_maybe(
+                                (!self.busy && !self.import_path.trim().is_empty())
+                                    .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
+                            ),
+                        )
+                        .push(
+                            text(format!(
+                                "Source · {} × {}",
+                                draft.dimensions.0, draft.dimensions.1
+                            ))
+                            .size(11),
+                        )
+                        .push(text(&self.designer.report).size(11).style(|t| text::Style {
+                            color: Some(style::muted(t)),
+                        }));
+                }
+            }
+            let inspector = column![
+                row![
+                    text(title).size(18),
+                    space().width(Fill),
+                    button("×").on_press(action(Panel(panel)))
+                ]
+                .align_y(iced::Center),
+                scrollable(controls).height(Fill),
+            ]
+            .spacing(16);
+            workspace = workspace.push(
+                container(inspector)
+                    .padding(16)
+                    .width(316)
+                    .height(Fill)
+                    .style(style::panel),
+            );
+        }
+        column![toolbar, workspace].spacing(6).height(Fill).into()
     }
 }
 

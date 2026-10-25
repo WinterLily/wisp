@@ -12,14 +12,20 @@ cargo run -p wisp -- --import examples/shader-basic/background.png
 
 ## Creating a wallpaper
 
-1. Choose an image, or enter its path and select **Open path**.
-2. Enter a wallpaper name and author.
-3. Choose a preset, then enable effects and adjust their controls.
+1. Choose an image, or use **Open project…** to continue a saved draft.
+2. The canvas fills the workspace. Open **Project** to enter a name and author.
+3. Open **Effects** to choose a preset, enable effects, and adjust their controls.
 4. Move the pointer over the live preview to try parallax. Use **Pause** to freeze time.
-5. **Save editable project…** creates a new folder containing the image and authoring data.
-6. **Save to library** installs the current result. Select a monitor and **Apply wallpaper**
+5. **Project → Save project…** creates a new folder containing the image and authoring data.
+6. **Project → Save to library** installs the current result. Select a monitor under **Display** and **Apply wallpaper**
    on the Library page to run it on the desktop.
-7. **Export .wisp…** writes a portable package that works without Steam.
+7. **Project → Export wallpaper…** writes a portable `.wisp` package that works without Steam.
+
+Only one panel opens at a time; select its toolbar button again or press Escape to
+close it. **Focus** (F11) hides the toolbar and panels. Escape restores the controls
+without losing your place. The canvas preserves the source image's proportions
+as the workspace resizes. Image/project paths and replacement actions are under
+**Project** after opening an image.
 
 | Preset | Effects | Render passes |
 | --- | --- | --- |
@@ -48,7 +54,7 @@ my-wallpaper-project/
 └── assets/background.png   # or .jpg / .webp, detected from the image bytes
 ```
 
-Use **Open draft** to select a saved folder. The image is copied into the project,
+Use **Open project…** on the empty canvas or **Project → Open…** to select a saved folder. The image is copied into the project,
 so moving or removing the original image does not break it. Project saving requires
 a new folder name; use a new revision folder when saving further edits. Failed saves
 leave the in-memory draft available. Package export similarly requires a new filename.

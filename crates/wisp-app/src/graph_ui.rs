@@ -6,8 +6,17 @@ use iced::{
 };
 use wisp_ir::Op;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum GraphPanel {
+    Nodes,
+    Properties,
+    Preview,
+    Project,
+}
+
 #[derive(Clone)]
 pub(super) enum GraphMessage {
+    Panel(GraphPanel),
     New,
     FromEasy,
     Browse,
@@ -42,6 +51,7 @@ pub(super) enum GraphMessage {
 }
 #[derive(Default)]
 pub(super) struct GraphEditor {
+    pub panel: Option<GraphPanel>,
     pub document: Option<Arc<Document>>,
     pub preview: Option<Preview>,
     pub selected: Option<String>,
@@ -95,7 +105,10 @@ impl App {
         self.graph.zoom = ((width - 40.) / (max_x - min_x))
             .min((height - 40.) / (max_y - min_y))
             .clamp(0.1, 1.);
-        self.graph.pan = Vector::new(20. - min_x * self.graph.zoom, 20. - min_y * self.graph.zoom);
+        self.graph.pan = Vector::new(
+            (width - (max_x - min_x) * self.graph.zoom) * 0.5 - min_x * self.graph.zoom,
+            (height - (max_y - min_y) * self.graph.zoom) * 0.5 - min_y * self.graph.zoom,
+        );
     }
     fn graph_compile(&mut self) -> Task<Message> {
         let Some(doc) = self.graph.document.clone() else {
@@ -175,6 +188,9 @@ impl App {
         use GraphMessage::*;
         let imported = matches!(&message, AssetChosen(_));
         match message {
+            Panel(panel) => {
+                self.graph.panel = (self.graph.panel != Some(panel)).then_some(panel);
+            }
             Compiled(revision, result) => {
                 if revision != self.graph.revision {
                     return Task::none();
@@ -257,7 +273,12 @@ impl App {
             }
             Fit => self.graph_fit(),
             CanvasSize(size) => {
+                let first_layout =
+                    self.graph.canvas_size.width <= 0. || self.graph.canvas_size.height <= 0.;
                 self.graph.canvas_size = size;
+                if first_layout {
+                    self.graph_fit();
+                }
             }
             Pan(delta) => self.graph.pan += delta,
             Zoom(delta, cursor) => {
@@ -611,49 +632,12 @@ impl App {
         }
         Task::none()
     }
-    pub(super) fn graph_view(&self) -> Element<'_, Message> {
+    fn graph_properties(&self) -> Element<'_, Message> {
         use GraphMessage::*;
         let action = |m| Message::Graph(m);
         let enabled = !self.busy;
-        let mut left = column![
-            text("Visual Graph").size(24),
-            row![
-                button("New").on_press_maybe(enabled.then_some(action(New))),
-                button("Open…").on_press_maybe(enabled.then_some(action(Browse)))
-            ]
-            .spacing(6),
-            text_input("Project folder", &self.import_path).on_input(Message::ImportPath),
-            button("Open path").on_press_maybe(
-                (enabled && !self.import_path.trim().is_empty())
-                    .then(|| action(Open(PathBuf::from(self.import_path.trim()))))
-            ),
-            button("From Easy Designer").on_press_maybe(
-                (enabled && self.designer.draft.is_some()).then_some(action(FromEasy))
-            ),
-            text_input("Search nodes…", &self.graph.search).on_input(move |s| action(Search(s)))
-        ]
-        .spacing(8);
-        let mut results = column![].spacing(3);
-        for kind in CATALOG
-            .iter()
-            .filter(|k| k.to_lowercase().contains(&self.graph.search.to_lowercase()))
-        {
-            results = results.push(button(*kind).width(Fill).on_press_maybe(
-                (enabled && self.graph.document.is_some()).then(|| action(Add((*kind).into()))),
-            ));
-        }
-        left = left.push(scrollable(results).height(Fill));
-        let mut right = column![text("Properties").size(20)].spacing(8);
+        let mut right = column![].spacing(12);
         if let Some(doc) = &self.graph.document {
-            right = right
-                .push(
-                    text_input("Name", &doc.project.name)
-                        .on_input(move |v| action(Metadata(false, v))),
-                )
-                .push(
-                    text_input("Author", &doc.project.author)
-                        .on_input(move |v| action(Metadata(true, v))),
-                );
             if let Some(id) = &self.graph.selected
                 && let Some(n) = doc.node(id)
             {
@@ -723,79 +707,242 @@ impl App {
             } else {
                 right = right.push(text("Select a node to edit its properties."));
             }
-            right = right
-                .push(button("Add image asset…").on_press_maybe(enabled.then_some(action(Asset))));
-            right = right.push(
-                text(if self.graph.dirty {
-                    "Draft · unsaved changes"
+        }
+        right.into()
+    }
+    pub(super) fn graph_view(&self) -> Element<'_, Message> {
+        use GraphMessage::*;
+        use GraphPanel as PanelKind;
+        let action = |m| Message::Graph(m);
+        let enabled = !self.busy;
+        let Some(doc) = &self.graph.document else {
+            return container(
+                column![
+                    text("Make room for an idea.").size(32),
+                    text("Build a wallpaper, one node at a time.").size(15),
+                    space().height(12),
+                    row![
+                        button("New graph")
+                            .style(iced_button::primary)
+                            .on_press_maybe(enabled.then_some(action(New))),
+                        button("Open project…").on_press_maybe(enabled.then_some(action(Browse))),
+                    ]
+                    .spacing(12),
+                    button("Continue from Designer").on_press_maybe(
+                        (enabled && self.designer.draft.is_some()).then_some(action(FromEasy))
+                    ),
+                ]
+                .spacing(14)
+                .align_x(iced::Center),
+            )
+            .center(Fill)
+            .style(style::stage)
+            .into();
+        };
+        let canvas = canvas(super::graph_canvas::GraphCanvas(&self.graph, self.busy))
+            .width(Fill)
+            .height(Fill);
+        if self.focus_mode {
+            return iced::widget::stack![
+                canvas,
+                container(button("Show controls · Esc").on_press(Message::Dismiss))
+                    .padding(12)
+                    .align_right(Fill),
+            ]
+            .into();
+        }
+        let tool = |label, panel| {
+            button(text(label).size(13))
+                .style(if self.graph.panel == Some(panel) {
+                    style::selected
                 } else {
-                    "Draft saved"
+                    style::quiet
                 })
-                .size(12),
-            );
-            right = right.push(
-                button("Save project…").on_press_maybe(enabled.then_some(action(Save(true)))),
-            );
-            right = right.push(
-                button("Export .wisp…")
-                    .on_press_maybe((enabled && self.graph.valid).then_some(action(Save(false)))),
-            );
-            right = right.push(
-                button("Save to library")
-                    .on_press_maybe((enabled && self.graph.valid).then_some(action(Install))),
+                .on_press(action(Panel(panel)))
+        };
+        let toolbar = row![
+            text(&doc.project.name).size(15),
+            space().width(Fill),
+            tool("Add node", PanelKind::Nodes),
+            tool("Properties", PanelKind::Properties),
+            tool("Preview", PanelKind::Preview),
+            tool("Project", PanelKind::Project),
+            button("Focus").on_press(Message::Focus),
+        ]
+        .spacing(4)
+        .align_y(iced::Center)
+        .padding([4, 8]);
+        let canvas: Element<'_, Message> = if self.graph.panel != Some(PanelKind::Preview)
+            && let Some(p) = &self.graph.preview
+        {
+            iced::widget::stack![
+                canvas,
+                container(
+                    container(p.view(135.))
+                        .width(240)
+                        .padding(6)
+                        .style(style::panel)
+                )
+                .padding(16)
+                .align_right(Fill)
+                .align_bottom(Fill),
+            ]
+            .into()
+        } else {
+            canvas.into()
+        };
+        let mut stage = column![canvas].spacing(8).height(Fill);
+        if !self.graph.diagnostic.is_empty() {
+            stage = stage.push(
+                scrollable(
+                    text(&self.graph.diagnostic)
+                        .size(12)
+                        .color(iced::Color::from_rgb(0.9, 0.5, 0.45)),
+                )
+                .height(64),
             );
         }
-        let mut center = column![
+        stage = stage.push(
             row![
                 button("Arrange").on_press_maybe(enabled.then_some(action(Arrange))),
                 button("Fit").on_press(action(Fit)),
-                text(format!("{:.0}%", self.graph.zoom * 100.)),
-                text("Drag nodes · scroll to zoom · drag background to pan").size(12)
+                text(format!("{:.0}%", self.graph.zoom * 100.)).size(11),
+                space().width(Fill),
+                text(if self.graph.wire.is_some() {
+                    "Choose an input · Right-click to cancel"
+                } else {
+                    "Drag to pan · Scroll to zoom"
+                })
+                .size(11),
             ]
-            .spacing(8),
-            canvas(super::graph_canvas::GraphCanvas(&self.graph, self.busy))
-                .width(Fill)
-                .height(Fill),
-            text(if self.graph.wire.is_some() {
-                "Select an input socket to connect; right-click cancels."
-            } else {
-                "Connect an output dot to an input dot. Select a node to disconnect inputs."
-            })
-            .size(12)
-        ]
-        .spacing(8);
-        if let Some(p) = &self.graph.preview {
-            center = center.push(
-                row![
-                    p.view(180.0),
+            .spacing(8)
+            .align_y(iced::Center),
+        );
+        let mut workspace = row![stage].spacing(8).height(Fill);
+        if let Some(panel) = self.graph.panel {
+            let title = match panel {
+                PanelKind::Nodes => "Add a node",
+                PanelKind::Properties => "Properties",
+                PanelKind::Preview => "Live preview",
+                PanelKind::Project => "Project",
+            };
+            let mut content = column![].spacing(14);
+            match panel {
+                PanelKind::Nodes => {
+                    content = content.push(
+                        text_input("Find a node…", &self.graph.search)
+                            .on_input(move |s| action(Search(s))),
+                    );
+                    let query = self.graph.search.to_lowercase();
+                    let matches: Vec<_> = CATALOG
+                        .iter()
+                        .filter(|k| k.to_lowercase().contains(&query))
+                        .collect();
+                    if matches.is_empty() {
+                        content = content.push(text("No matching nodes.").size(13));
+                    }
+                    for kind in matches {
+                        content = content.push(
+                            button(*kind)
+                                .width(Fill)
+                                .on_press_maybe(enabled.then(|| action(Add((*kind).into())))),
+                        );
+                    }
+                }
+                PanelKind::Properties => content = content.push(self.graph_properties()),
+                PanelKind::Preview => {
+                    if let Some(p) = &self.graph.preview {
+                        content = content
+                            .push(p.view(220.))
+                            .push(
+                                button(if self.preview_paused { "Play" } else { "Pause" })
+                                    .on_press(Message::PausePreview),
+                            )
+                            .push(text(&self.graph.report).size(11));
+                    } else {
+                        content = content.push(text("Preparing preview…").size(13));
+                    }
+                }
+                PanelKind::Project => {
+                    content = content
+                        .push(text("Name").size(12))
+                        .push(
+                            text_input("Name", &doc.project.name)
+                                .on_input(move |v| action(Metadata(false, v))),
+                        )
+                        .push(text("Author").size(12))
+                        .push(
+                            text_input("Author", &doc.project.author)
+                                .on_input(move |v| action(Metadata(true, v))),
+                        )
+                        .push(
+                            text(if self.graph.dirty {
+                                "Unsaved changes"
+                            } else {
+                                "Project saved"
+                            })
+                            .size(11),
+                        )
+                        .push(
+                            button("Save project…")
+                                .style(iced_button::primary)
+                                .width(Fill)
+                                .on_press_maybe(enabled.then_some(action(Save(true)))),
+                        )
+                        .push(button("Export wallpaper…").width(Fill).on_press_maybe(
+                            (enabled && self.graph.valid).then_some(action(Save(false))),
+                        ))
+                        .push(button("Save to library").width(Fill).on_press_maybe(
+                            (enabled && self.graph.valid).then_some(action(Install)),
+                        ))
+                        .push(
+                            button("Add image asset…")
+                                .width(Fill)
+                                .on_press_maybe(enabled.then_some(action(Asset))),
+                        )
+                        .push(iced::widget::rule::horizontal(1))
+                        .push(
+                            row![
+                                button("New").on_press_maybe(enabled.then_some(action(New))),
+                                button("Open…").on_press_maybe(enabled.then_some(action(Browse)))
+                            ]
+                            .spacing(8),
+                        )
+                        .push(button("From Designer").on_press_maybe(
+                            (enabled && self.designer.draft.is_some()).then_some(action(FromEasy)),
+                        ))
+                        .push(
+                            text_input("Project folder", &self.import_path)
+                                .on_input(Message::ImportPath),
+                        )
+                        .push(
+                            button("Open path").on_press_maybe(
+                                (enabled && !self.import_path.trim().is_empty())
+                                    .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
+                            ),
+                        );
+                }
+            }
+            workspace = workspace.push(
+                container(
                     column![
-                        button(if self.preview_paused { "Play" } else { "Pause" })
-                            .on_press(Message::PausePreview),
-                        text(&self.graph.report).size(12)
+                        row![
+                            text(title).size(18),
+                            space().width(Fill),
+                            button("×").on_press(action(Panel(panel)))
+                        ]
+                        .align_y(iced::Center),
+                        scrollable(content).height(Fill),
                     ]
-                    .width(145)
-                ]
-                .spacing(8),
-            );
-        }
-        if !self.graph.diagnostic.is_empty() {
-            center = center.push(
-                scrollable(
-                    text(&self.graph.diagnostic)
-                        .size(13)
-                        .color(iced::Color::from_rgb(1., 0.55, 0.5)),
+                    .spacing(16),
                 )
-                .height(65),
+                .padding(16)
+                .width(300)
+                .height(Fill)
+                .style(style::panel),
             );
         }
-        row![
-            left.width(190),
-            center.width(Fill),
-            scrollable(right).width(240)
-        ]
-        .spacing(14)
-        .height(Fill)
-        .into()
+        column![toolbar, workspace].spacing(6).height(Fill).into()
     }
 }
 
@@ -814,6 +961,20 @@ mod tests {
         app.graph.document = Some(Arc::new(Document::default()));
         app
     }
+    #[test]
+    fn initial_layout_fits_the_actual_canvas_without_resetting_later_navigation() {
+        let mut app = app();
+        app.graph_fit();
+        let fallback_pan = app.graph.pan;
+        let _ = app.graph_update(GraphMessage::CanvasSize(iced::Size::new(1200., 900.)));
+        assert_ne!(app.graph.pan, fallback_pan);
+        app.graph.pan = Vector::new(100., 80.);
+        app.graph.zoom = 0.6;
+        let _ = app.graph_update(GraphMessage::CanvasSize(iced::Size::new(900., 620.)));
+        assert_eq!(app.graph.pan, Vector::new(100., 80.));
+        assert_eq!(app.graph.zoom, 0.6);
+    }
+
     #[test]
     fn invalid_and_stale_compiles_keep_last_preview_and_values_apply_explicitly() {
         let mut app = app();
