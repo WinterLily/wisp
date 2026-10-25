@@ -2,28 +2,19 @@
 import argparse
 import json
 from pathlib import Path
-import struct
-import zlib
-import zipfile
+import sys
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from package_tools import rgba_png, write_package
 
 
 def image_png():
-    def chunk(kind, data):
-        return (struct.pack(">I", len(data)) + kind + data
-                + struct.pack(">I", zlib.crc32(kind + data)))
+    def pixel_at(x, y):
+        bright = ((x // 16) + (y // 16)) % 2
+        return 30 + 180 * bright, 40 + x // 2, 100 + y // 2, 255
 
-    size = 256
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)
-        for x in range(size):
-            bright = ((x // 16) + (y // 16)) % 2
-            rows.extend((30 + 180 * bright, 40 + x // 2, 100 + y // 2, 255))
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">2I5B", size, size, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+    return rgba_png(256, 256, pixel_at)
 
 
 def main():
@@ -63,11 +54,7 @@ def main():
     }
     for name in ("horizontal", "vertical", "composite"):
         assets[f"shaders/{name}.wgsl"] = (HERE / f"{name}.wgsl").read_bytes()
-    with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, data in assets.items():
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, data)
+    write_package(args.output, assets)
     print(f"Created {args.output}")
 
 

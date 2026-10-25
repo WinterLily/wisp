@@ -2,28 +2,19 @@
 import argparse
 import json
 from pathlib import Path
-import struct
-import zlib
-import zipfile
+import sys
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from package_tools import rgba_png, write_package
 
 
 def accent_png():
-    def chunk(kind, data):
-        return (struct.pack(">I", len(data)) + kind + data
-                + struct.pack(">I", zlib.crc32(kind + data)))
+    def pixel_at(x, y):
+        stripe = ((x + y) // 32) % 2
+        return 40 + 100 * stripe, 60 + y // 2, 180 + x // 4, 255
 
-    size = 256
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)  # PNG filter: none
-        for x in range(size):
-            stripe = ((x + y) // 32) % 2
-            rows.extend((40 + 100 * stripe, 60 + y // 2, 180 + x // 4, 255))
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">2I5B", size, size, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+    return rgba_png(256, 256, pixel_at)
 
 
 def main():
@@ -59,11 +50,7 @@ def main():
         "assets/background.png": (HERE.parent / "shader-basic/background.png").read_bytes(),
         "assets/accent.png": accent_png(),
     }
-    with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, data in assets.items():
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, data)
+    write_package(args.output, assets)
     print(f"Created {args.output}")
 
 

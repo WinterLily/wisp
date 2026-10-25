@@ -118,7 +118,7 @@ fn invalid_projects_never_create_output_and_inputs_are_bounded() {
     std::fs::write(temp.0.join("graph.json"), vec![b' '; 1024 * 1024 + 1]).unwrap();
     let result = run(&temp.0, &["--check".as_ref()]);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("byte limit"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("byte input limit"));
 }
 #[cfg(unix)]
 #[test]
