@@ -1,7 +1,25 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      windows_desktop:
+        description: Run native desktop and loopback tests on an interactive Windows runner
+        type: boolean
+        default: false
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+      - run: cargo check --locked --workspace --all-targets
+
   check:
     strategy:
       matrix:
@@ -19,6 +37,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      - run: python -B -m unittest discover -s examples -p "test_*.py"
       - run: cargo run --locked -- --check
       - run: cargo run --locked -p wisp -- --data-dir app-check --import examples/graph-fused --check
       - run: cargo run --locked -p wisp -- --data-dir app-check --create examples/shader-basic/background.png --check
@@ -102,12 +121,15 @@ jobs:
           mkdir -p /tmp/wisp-runtime
           chmod 700 /tmp/wisp-runtime
           echo XDG_RUNTIME_DIR=/tmp/wisp-runtime >> "$GITHUB_ENV"
-      - name: DirectX 12 GPU regression tests
+      - name: DirectX 12 runtime regression tests
         if: runner.os == 'Windows'
-        run: |
-          cargo test --locked -p wisp-runtime --test gpu -- --ignored
-          cargo test --locked -p wisp-compiler --test gpu -- --ignored
-          cargo test --locked -p wisp-app --lib -- --ignored
+        run: cargo test --locked -p wisp-runtime --test gpu -- --ignored
+      - name: DirectX 12 compiler regression tests
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p wisp-compiler --test gpu -- --ignored
+      - name: DirectX 12 application regression tests
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p wisp-app --lib -- --ignored
       - name: Validate and render the identical portable packages
         shell: bash
         run: |
@@ -168,6 +190,41 @@ jobs:
             graph-window.png
             interactive-window.png
             layers-window.png
+
+  desktop-audit:
+    runs-on: ubuntu-latest
+    env:
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install disposable desktop dependencies
+        run: sudo apt-get update && sudo apt-get install -y sway grim wtype mesa-vulkan-drivers libegl1 libgles2 libgl1-mesa-dri libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev libasound2-dev
+      - name: Verify audit-runner deadlines, verdicts, and cleanup
+        run: python3 -B -m unittest discover -s tools -p "test_*.py"
+      - run: cargo build --locked --workspace
+      - name: Exercise editing, recovery, and independent desktop presentation
+        run: python3 tools/audit.py --compositor sway --output-dir agents/ci-audit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-audit
+          path: agents/ci-audit
+
+  windows-desktop:
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_desktop
+    runs-on: [self-hosted, Windows, wisp-desktop]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked --workspace
+      - name: Verify Explorer placement and input transparency
+        run: cargo test --locked -p wisp-host-windows -- --ignored
+      - name: Verify independent daemon reload and cleanup
+        run: cargo test --locked -p wisp --test daemon -- --ignored
+      - name: Verify Windows output loopback
+        run: cargo test --locked -p wisp-audio --test loopback_windows -- --ignored
 
   audio-capture:
     runs-on: ubuntu-latest

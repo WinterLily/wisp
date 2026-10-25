@@ -58,7 +58,7 @@ fn system_output_loopback_captures_tone_and_releases_to_silence() {
     }
 
     let failed = Arc::new(AtomicBool::new(false));
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     macro_rules! stream {
         ($sample:ty) => {
             tone_stream::<$sample>(&device, config, failed.clone())
