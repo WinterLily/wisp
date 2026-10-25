@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Read, Write},
     path::{Component, Path},
 };
 use wisp_compiler::{Asset, Compilation, Project, ProjectAsset};
@@ -100,16 +99,7 @@ pub fn label(op: &Op) -> String {
         .replace('_', " ")
 }
 fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    ensure!(
-        fs::metadata(path)?.is_file(),
-        "input must be a regular file"
-    );
-    let file = fs::File::open(path)?;
-    ensure!(file.metadata()?.is_file(), "input must be a regular file");
-    let mut bytes = vec![];
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= limit, "input exceeds byte limit");
-    Ok(bytes)
+    wisp_io::read_bounded(path, limit)
 }
 fn contained(root: &Path, name: &str) -> Result<std::path::PathBuf> {
     ensure!(
@@ -716,20 +706,20 @@ impl Document {
                     "unsupported asset extension"
                 );
                 let path = format!("assets/image{i}.{}", asset.extension);
-                fs::write(destination.join(&path), &asset.bytes)?;
+                crate::library::atomic_write(&destination.join(&path), &asset.bytes)?;
                 project.assets.insert(id.clone(), ProjectAsset { path });
             }
-            fs::write(
-                destination.join("project.json"),
-                serde_json::to_vec_pretty(&project)?,
+            crate::library::atomic_write(
+                &destination.join("project.json"),
+                &serde_json::to_vec_pretty(&project)?,
             )?;
-            fs::write(
-                destination.join("graph.json"),
-                serde_json::to_vec_pretty(&self.graph)?,
+            crate::library::atomic_write(
+                &destination.join("graph.json"),
+                &serde_json::to_vec_pretty(&self.graph)?,
             )?;
-            fs::write(
-                destination.join("layout.json"),
-                serde_json::to_vec_pretty(&self.layout)?,
+            crate::library::atomic_write(
+                &destination.join("layout.json"),
+                &serde_json::to_vec_pretty(&self.layout)?,
             )?;
             Ok(())
         })();
@@ -740,15 +730,7 @@ impl Document {
     }
     pub fn export(&self, path: &Path) -> Result<()> {
         let bytes = self.compile()?.package.to_bytes(&Default::default())?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(&bytes)?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(path)
-            .context("choose a new export filename")?;
+        crate::library::write_new(path, &bytes).context("choose a new export filename")?;
         Ok(())
     }
 }

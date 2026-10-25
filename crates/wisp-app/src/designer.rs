@@ -4,12 +4,7 @@ use anyhow::{Context, Result, ensure};
 use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{Read, Write},
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 use wisp_compiler::{Asset, Compilation, Project, ProjectAsset};
 use wisp_compiler::{decode_source_image, read_source_image};
 use wisp_format::{Manifest, PackageLimits, Parameter, ParameterValue};
@@ -167,16 +162,7 @@ pub struct Draft {
     pub dimensions: (u32, u32),
 }
 pub(crate) fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    ensure!(
-        fs::metadata(path)?.is_file(),
-        "input must be a regular file"
-    );
-    let file = fs::File::open(path)?;
-    ensure!(file.metadata()?.is_file(), "input must be a regular file");
-    let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= limit, "input exceeds byte limit");
-    Ok(bytes)
+    wisp_io::read_bounded(path, limit)
 }
 impl Draft {
     pub fn from_image(path: &Path) -> Result<Self> {
@@ -380,15 +366,7 @@ impl Draft {
             .compile()?
             .package
             .to_bytes(&PackageLimits::default())?;
-        let parent = destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(&bytes)?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(destination)
-            .context("choose a new export filename")?;
+        crate::library::write_new(destination, &bytes).context("choose a new export filename")?;
         Ok(())
     }
     /// A new directory keeps existing projects safe; contains both standard compiler
@@ -415,13 +393,13 @@ impl Draft {
             };
             document.save(destination)?;
             let result = (|| -> Result<()> {
-                fs::write(
-                    destination.join("designer.json"),
-                    serde_json::to_vec_pretty(&self.design)?,
+                crate::library::atomic_write(
+                    &destination.join("designer.json"),
+                    &serde_json::to_vec_pretty(&self.design)?,
                 )?;
-                fs::write(
-                    destination.join("layers.json"),
-                    serde_json::to_vec_pretty(stack)?,
+                crate::library::atomic_write(
+                    &destination.join("layers.json"),
+                    &serde_json::to_vec_pretty(stack)?,
                 )?;
                 Ok(())
             })();
@@ -434,7 +412,7 @@ impl Draft {
         let result = (|| -> Result<()> {
             fs::create_dir(destination.join("assets"))?;
             let path = format!("assets/background.{}", self.extension);
-            fs::write(destination.join(&path), &self.image)?;
+            crate::library::atomic_write(&destination.join(&path), &self.image)?;
             let project = Project {
                 version: 1,
                 id: format!("local.easy.{:x}", Sha256::digest(&self.image)),
@@ -444,17 +422,17 @@ impl Draft {
                 tags: vec!["easy-designer".into()],
                 assets: BTreeMap::from([("background".into(), ProjectAsset { path })]),
             };
-            fs::write(
-                destination.join("project.json"),
-                serde_json::to_vec_pretty(&project)?,
+            crate::library::atomic_write(
+                &destination.join("project.json"),
+                &serde_json::to_vec_pretty(&project)?,
             )?;
-            fs::write(
-                destination.join("graph.json"),
-                serde_json::to_vec_pretty(&self.graph()?)?,
+            crate::library::atomic_write(
+                &destination.join("graph.json"),
+                &serde_json::to_vec_pretty(&self.graph()?)?,
             )?;
-            fs::write(
-                destination.join("designer.json"),
-                serde_json::to_vec_pretty(&self.design)?,
+            crate::library::atomic_write(
+                &destination.join("designer.json"),
+                &serde_json::to_vec_pretty(&self.design)?,
             )?;
             Ok(())
         })();

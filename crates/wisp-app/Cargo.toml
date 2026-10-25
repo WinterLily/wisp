@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+wisp-io.workspace = true
 wisp-audio.workspace = true
 anyhow.workspace = true
 iced.workspace = true
