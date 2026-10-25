@@ -6,9 +6,19 @@ pub(crate) enum PaintTool {
     HardRound,
     Airbrush,
     PolygonalLasso,
+    MagicWand,
 }
 impl PaintTool {
-    pub const ALL: [Self; 3] = [Self::HardRound, Self::Airbrush, Self::PolygonalLasso];
+    pub const ALL: [Self; 4] = [
+        Self::HardRound,
+        Self::Airbrush,
+        Self::PolygonalLasso,
+        Self::MagicWand,
+    ];
+
+    pub fn is_brush(self) -> bool {
+        matches!(self, Self::HardRound | Self::Airbrush)
+    }
 }
 impl std::fmt::Display for PaintTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -16,8 +26,102 @@ impl std::fmt::Display for PaintTool {
             Self::HardRound => "Hard round",
             Self::Airbrush => "Airbrush",
             Self::PolygonalLasso => "Polygonal lasso",
+            Self::MagicWand => "Magic wand",
         })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MagicWandOptions {
+    pub tolerance: u8,
+    pub all_matching: bool,
+}
+impl Default for MagicWandOptions {
+    fn default() -> Self {
+        Self {
+            tolerance: 32,
+            all_matching: false,
+        }
+    }
+}
+
+pub(crate) fn fill_magic_wand(
+    mask: &mut image::GrayImage,
+    source: &image::RgbaImage,
+    point: [f32; 2],
+    options: MagicWandOptions,
+    value: u8,
+) -> Result<[u32; 4]> {
+    ensure!(
+        point
+            .into_iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v)),
+        "invalid magic wand coordinates"
+    );
+    ensure!(
+        source.width() > 0 && source.height() > 0 && mask.width() > 0 && mask.height() > 0,
+        "magic wand needs a source image and mask"
+    );
+    let width = source.width() as usize;
+    let height = source.height() as usize;
+    let seed_x = ((point[0] * width as f32) as usize).min(width - 1);
+    let seed_y = ((point[1] * height as f32) as usize).min(height - 1);
+    // Invisible RGB values must not split an otherwise uniform transparent region.
+    let premultiplied = |pixel: &image::Rgba<u8>| {
+        let [r, g, b, a] = pixel.0;
+        let channel = |v| (u16::from(v) * u16::from(a) / 255) as u8;
+        [channel(r), channel(g), channel(b), a]
+    };
+    let seed_color = premultiplied(source.get_pixel(seed_x as u32, seed_y as u32));
+    // Comparing to the seed prevents a gentle gradient from leaking across the entire image.
+    let matches = |index: usize| {
+        premultiplied(source.get_pixel((index % width) as u32, (index / width) as u32))
+            .into_iter()
+            .zip(seed_color)
+            .all(|(channel, seed)| channel.abs_diff(seed) <= options.tolerance)
+    };
+    let mut selected = vec![false; width * height];
+    if options.all_matching {
+        for (index, selected) in selected.iter_mut().enumerate() {
+            *selected = matches(index);
+        }
+    } else {
+        let seed = seed_y * width + seed_x;
+        selected[seed] = true;
+        let mut pending = vec![seed];
+        while let Some(index) = pending.pop() {
+            let x = index % width;
+            let y = index / width;
+            let neighbors = [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width).then_some(index + 1),
+                (y > 0).then(|| index - width),
+                (y + 1 < height).then_some(index + width),
+            ];
+            for neighbor in neighbors.into_iter().flatten() {
+                if !selected[neighbor] && matches(neighbor) {
+                    selected[neighbor] = true;
+                    pending.push(neighbor);
+                }
+            }
+        }
+    }
+    let mask_width = u64::from(mask.width());
+    let mask_height = u64::from(mask.height());
+    let mut region = [mask.width(), mask.height(), 0, 0];
+    for (x, y, pixel) in mask.enumerate_pixels_mut() {
+        // Selection uses the displayed source's topology before mapping to the square mask.
+        let source_x = ((u64::from(x) * 2 + 1) * width as u64 / (mask_width * 2)) as usize;
+        let source_y = ((u64::from(y) * 2 + 1) * height as u64 / (mask_height * 2)) as usize;
+        if selected[source_y * width + source_x] {
+            pixel.0[0] = value;
+            region[0] = region[0].min(x);
+            region[1] = region[1].min(y);
+            region[2] = region[2].max(x + 1);
+            region[3] = region[3].max(y + 1);
+        }
+    }
+    Ok(if region[2] == 0 { [0; 4] } else { region })
 }
 
 // Source aspect keeps brushes circular even though the retained mask is square.
@@ -148,6 +252,152 @@ pub(crate) fn fill_polygon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wand_selects_connected_colors_without_diagonal_or_row_wrapping_leaks() {
+        let red = image::Rgba([180, 20, 30, 255]);
+        let blue = image::Rgba([20, 30, 180, 255]);
+        let mut source = image::RgbaImage::from_pixel(3, 3, blue);
+        for (x, y) in [(0, 0), (1, 0), (2, 1), (0, 2)] {
+            source.put_pixel(x, y, red);
+        }
+        let mut mask = image::GrayImage::from_pixel(3, 3, image::Luma([80]));
+        let options = MagicWandOptions {
+            tolerance: 0,
+            all_matching: false,
+        };
+        assert_eq!(
+            fill_magic_wand(&mut mask, &source, [0., 0.], options, 255).unwrap(),
+            [0, 0, 2, 1]
+        );
+        assert_eq!(mask.as_raw(), &[255, 255, 80, 80, 80, 80, 80, 80, 80]);
+        fill_magic_wand(
+            &mut mask,
+            &source,
+            [0., 0.],
+            MagicWandOptions {
+                all_matching: true,
+                ..options
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(mask.as_raw(), &[0, 0, 80, 80, 80, 0, 0, 80, 80]);
+    }
+
+    #[test]
+    fn wand_tolerance_is_inclusive_relative_to_the_seed_and_includes_alpha() {
+        let source = image::RgbaImage::from_fn(5, 1, |x, _| {
+            image::Rgba(match x {
+                0 => [100, 20, 30, 255],
+                1 => [110, 20, 30, 255],
+                2 => [120, 20, 30, 255],
+                3 => [100, 20, 30, 0],
+                _ => [100, 20, 30, 255],
+            })
+        });
+        for (tolerance, expected) in [
+            (0, vec![255, 0, 0, 0, 0]),
+            (10, vec![255, 255, 0, 0, 0]),
+            (20, vec![255, 255, 255, 0, 0]),
+            (255, vec![255; 5]),
+        ] {
+            let mut mask = image::GrayImage::new(5, 1);
+            fill_magic_wand(
+                &mut mask,
+                &source,
+                [0.; 2],
+                MagicWandOptions {
+                    tolerance,
+                    all_matching: false,
+                },
+                255,
+            )
+            .unwrap();
+            assert_eq!(mask.into_raw(), expected);
+        }
+        let transparent =
+            image::RgbaImage::from_fn(2, 1, |x, _| image::Rgba([x as u8 * 255, 40, 90, 0]));
+        let mut mask = image::GrayImage::new(2, 1);
+        fill_magic_wand(
+            &mut mask,
+            &transparent,
+            [1.; 2],
+            MagicWandOptions {
+                tolerance: 0,
+                all_matching: false,
+            },
+            255,
+        )
+        .unwrap();
+        assert_eq!(mask.into_raw(), vec![255, 255]);
+    }
+
+    #[test]
+    fn wand_maps_source_regions_to_different_mask_sizes_and_accepts_image_edges() {
+        let source = image::RgbaImage::from_fn(4, 2, |x, _| {
+            image::Rgba([if x < 2 { 0 } else { 255 }, 0, 0, 255])
+        });
+        let mut mask = image::GrayImage::new(8, 8);
+        assert_eq!(
+            fill_magic_wand(
+                &mut mask,
+                &source,
+                [1., 1.],
+                MagicWandOptions::default(),
+                255
+            )
+            .unwrap(),
+            [4, 0, 8, 8]
+        );
+        assert!(
+            mask.enumerate_pixels()
+                .all(|(x, _, p)| p.0[0] == if x < 4 { 0 } else { 255 })
+        );
+        let mut smaller = image::GrayImage::new(2, 1);
+        fill_magic_wand(
+            &mut smaller,
+            &source,
+            [0., 0.],
+            MagicWandOptions::default(),
+            255,
+        )
+        .unwrap();
+        assert_eq!(smaller.into_raw(), vec![255, 0]);
+    }
+
+    #[test]
+    fn invalid_wand_inputs_leave_the_mask_unchanged() {
+        let source = image::RgbaImage::new(2, 2);
+        let mut mask = image::GrayImage::from_pixel(2, 2, image::Luma([80]));
+        for point in [[f32::NAN, 0.], [0., f32::INFINITY], [-0.1, 0.], [0., 1.1]] {
+            assert!(
+                fill_magic_wand(&mut mask, &source, point, MagicWandOptions::default(), 255)
+                    .is_err()
+            );
+        }
+        assert!(
+            fill_magic_wand(
+                &mut mask,
+                &image::RgbaImage::new(0, 0),
+                [0.; 2],
+                MagicWandOptions::default(),
+                255
+            )
+            .is_err()
+        );
+        assert_eq!(mask.into_raw(), vec![80; 4]);
+        assert!(
+            fill_magic_wand(
+                &mut image::GrayImage::new(0, 0),
+                &source,
+                [0.; 2],
+                MagicWandOptions::default(),
+                255
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn airbrush_has_soft_falloff_builds_up_and_erases() {
