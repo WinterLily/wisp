@@ -1,7 +1,7 @@
 use super::*;
 use crate::{designer::Draft, layers::ControlId};
 use designer_ui::{
-    DesignerMessage, DesignerPanel,
+    DesignEffect, DesignerMessage, DesignerPanel, DesignerSelection,
     layer_ui::{LayerMessage, LayerTab},
 };
 use iced::{Event, Point, Rectangle, Size, mouse};
@@ -18,7 +18,8 @@ fn designer() -> (tempfile::TempDir, App) {
     let (mut app, _) = App::new(library, Settings::default(), None, None);
     app.page = Page::Designer;
     app.designer.draft = Some(Arc::new(draft));
-    app.designer.panel = Some(DesignerPanel::Effects);
+    app.designer.panel = Some(DesignerPanel::Layers);
+    app.designer.selection = DesignerSelection::Effect(DesignEffect::Blur);
     let _ = app.designer_update(DesignerMessage::Compiled(Ok((wallpaper, String::new()))));
     (temporary, app)
 }
@@ -125,7 +126,7 @@ fn renderer() -> iced_wgpu::Renderer {
     iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(14.))
 }
 
-const WINDOW_SIZE: Size = Size::new(1180., 1000.);
+const WINDOW_SIZE: Size = Size::new(1180., 1800.);
 
 fn slider_bounds(layout: Layout<'_>, bounds: &mut Vec<Rectangle>) {
     if layout.children().count() == 0
@@ -179,13 +180,21 @@ fn dispatch(
 #[ignore = "requires a working graphics adapter"]
 fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
     let renderer = renderer();
-    for layers in [false, true] {
+    for (selection, layers, expected_sliders) in [
+        (DesignerSelection::Effect(DesignEffect::Blur), false, 1),
+        (DesignerSelection::Effect(DesignEffect::Vignette), false, 1),
+        (DesignerSelection::Effect(DesignEffect::Pulse), false, 2),
+        (DesignerSelection::Effect(DesignEffect::Parallax), false, 1),
+        (DesignerSelection::Color, false, 2),
+        (DesignerSelection::Image, true, 12),
+    ] {
         let (_temporary, mut app) = designer();
+        app.designer.selection = selection;
         if layers {
             let stack = Arc::make_mut(app.designer.draft.as_mut().unwrap()).enable_layers();
             stack.layers[0].preset(crate::layers::Effect::Hair);
             app.designer.panel = Some(DesignerPanel::Layers);
-            app.designer.layer_tab = LayerTab::Motion;
+            app.designer.layer_tab = LayerTab::Adjust;
         }
         app.busy = true;
         app.designer.compiling = true;
@@ -198,7 +207,7 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
         );
         let mut bounds = Vec::new();
         slider_bounds(Layout::new(&node), &mut bounds);
-        assert_eq!(bounds.len(), if layers { 4 } else { 7 });
+        assert_eq!(bounds.len(), expected_sliders);
         drop(element);
         for bounds in bounds {
             for (event, fraction) in [
