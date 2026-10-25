@@ -427,20 +427,24 @@ impl App {
         if self.focus_mode {
             return iced::widget::stack![
                 stage,
-                container(button("Show controls · Esc").on_press(Message::Dismiss))
-                    .padding(12)
-                    .align_right(Fill),
+                container(icon_button(
+                    Icon::Unfocus,
+                    "Show controls · Esc",
+                    Some(Message::Dismiss),
+                    false
+                ))
+                .padding(12)
+                .align_right(Fill),
             ]
             .into();
         }
-        let tool = |label, panel| {
-            button(text(label).size(13))
-                .style(if self.designer.panel == Some(panel) {
-                    style::selected
-                } else {
-                    style::quiet
-                })
-                .on_press(action(Panel(panel)))
+        let tool = |icon, label, panel| {
+            icon_button(
+                icon,
+                label,
+                Some(action(Panel(panel))),
+                self.designer.panel == Some(panel),
+            )
         };
         let toolbar = row![
             text(if d.name.is_empty() {
@@ -455,12 +459,11 @@ impl App {
                     color: Some(style::muted(t))
                 }),
             space().width(Fill),
-            tool("Layers", PanelKind::Layers),
-            tool("Effects", PanelKind::Effects),
-            tool("Project", PanelKind::Project),
-            button(if self.preview_paused { "Play" } else { "Pause" })
-                .on_press(Message::PausePreview),
-            button("Focus").on_press(Message::Focus),
+            tool(Icon::Layers, "Layers", PanelKind::Layers),
+            tool(Icon::Effects, "Effects", PanelKind::Effects),
+            tool(Icon::Project, "Project", PanelKind::Project),
+            self.playback_button(),
+            icon_button(Icon::Focus, "Focus · F11", Some(Message::Focus), false),
         ]
         .align_y(iced::Center)
         .spacing(4)
@@ -617,7 +620,12 @@ impl App {
                 row![
                     text(title).size(18),
                     space().width(Fill),
-                    button("×").on_press(action(Panel(panel)))
+                    icon_button(
+                        Icon::Close,
+                        "Close panel",
+                        Some(action(Panel(panel))),
+                        false
+                    )
                 ]
                 .align_y(iced::Center),
                 scrollable(controls).height(Fill),

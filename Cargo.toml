@@ -38,7 +38,7 @@ wisp-host = { path = "crates/wisp-host" }
 wisp-host-windows = { path = "crates/wisp-host-windows" }
 windows-sys = "0.61"
 
-iced = { version = "0.14", default-features = false, features = ["wgpu", "canvas", "image-without-codecs", "tokio", "x11", "wayland"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "canvas", "svg", "image-without-codecs", "tokio", "x11", "wayland"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tempfile = "3"
 fs2 = "0.4"
