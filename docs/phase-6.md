@@ -149,6 +149,10 @@ There is no library removal or orphan-collection UI in this phase.
 
 ## Verification
 
+The [native agent audit](agent-audit.md) runs editing, recovery, keyboard and
+independent-daemon workflows inside a disposable Niri or headless Sway desktop,
+with bounded teardown and retained evidence.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
