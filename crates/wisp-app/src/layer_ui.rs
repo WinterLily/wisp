@@ -632,6 +632,108 @@ mod tests {
 #[cfg(test)]
 mod live_paint_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a working graphics adapter"]
+    fn continuous_strokes_render_the_latest_mask_on_every_frame() {
+        use canvas::Program;
+        use iced_wgpu::core::Renderer as _;
+        use iced_wgpu::graphics::geometry::Renderer as _;
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let gpu = pollster::block_on(wisp_runtime::Gpu::new(&instance, None)).unwrap();
+        let engine = iced_wgpu::Engine::new(
+            &gpu.adapter,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            None,
+            iced_wgpu::graphics::Shell::headless(),
+        );
+        let mut renderer = iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(16.));
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(dir.path().join("library"))).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.busy = false;
+        app.designer = Designer {
+            brush: 0.06,
+            paint_dimensions: [1024, 1024],
+            paint_source: Some(image::Handle::from_rgba(1, 1, vec![60, 70, 80, 255])),
+            paint_pixels: Some(::image::GrayImage::new(1024, 1024)),
+            ..Default::default()
+        };
+        app.refresh_mask_overlay(None);
+        let size = iced::Size::new(128., 128.);
+        let bounds = Rectangle::new(Point::ORIGIN, size);
+        let viewport =
+            iced_wgpu::graphics::Viewport::with_physical_size(iced::Size::new(128, 128), 1.);
+        let mut state = PaintState::default();
+
+        for erase in [false, true] {
+            let _ = app.layer_update(LayerMessage::Erase(erase));
+            for step in 0..12 {
+                let position = Point::new(16. + step as f32 * 8., 64.);
+                let event = canvas::Event::Mouse(if step == 0 {
+                    mouse::Event::ButtonPressed(mouse::Button::Left)
+                } else {
+                    mouse::Event::CursorMoved { position }
+                });
+                let action = MaskCanvas {
+                    designer: &app.designer,
+                    enabled: true,
+                }
+                .update(
+                    &mut state,
+                    &event,
+                    bounds,
+                    mouse::Cursor::Available(position),
+                )
+                .unwrap();
+                let Message::Designer(DesignerMessage::Layer(message)) =
+                    action.into_inner().0.unwrap()
+                else {
+                    panic!("expected a paint message");
+                };
+                let _ = app.layer_update(message);
+                renderer.reset(bounds);
+                for geometry in (MaskCanvas {
+                    designer: &app.designer,
+                    enabled: true,
+                })
+                .draw(
+                    &state,
+                    &renderer,
+                    &iced::Theme::Dark,
+                    bounds,
+                    mouse::Cursor::Unavailable,
+                ) {
+                    renderer.draw_geometry(geometry);
+                }
+                let pixels = renderer.screenshot(&viewport, Color::BLACK);
+                for painted_step in 0..=step {
+                    let offset = (64 * 128 + 16 + painted_step * 8) * 4;
+                    let pixel = &pixels[offset..offset + 4];
+                    if erase {
+                        assert!(pixel[1].abs_diff(70) <= 1, "erase frame {step}: {pixel:?}");
+                    } else {
+                        assert!(pixel[1] > 100, "paint frame {step}: {pixel:?}");
+                    }
+                }
+            }
+            let _ = MaskCanvas {
+                designer: &app.designer,
+                enabled: true,
+            }
+            .update(
+                &mut state,
+                &canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                bounds,
+                mouse::Cursor::Unavailable,
+            );
+            assert!(state.last.is_none());
+        }
+    }
+
     #[test]
     fn strokes_keep_source_visible_and_continue_during_throttled_compilation() {
         let dir = tempfile::tempdir().unwrap();
