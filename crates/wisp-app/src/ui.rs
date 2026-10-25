@@ -846,7 +846,7 @@ impl App {
                         Ok(())
                     })();
                     if let Err(error) = result {
-                        eprintln!("Could not save screenshot: {error:#}");
+                        eprintln!("AUDIT_FAILED: Could not save screenshot: {error:#}");
                         *self.exit_failure.lock().unwrap() =
                             Some(format!("Could not save screenshot: {error:#}"));
                         return iced::exit();

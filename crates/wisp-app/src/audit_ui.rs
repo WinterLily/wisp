@@ -655,6 +655,50 @@ mod tests {
         assert!(app.exit_failure.lock().unwrap().is_none());
     }
     #[test]
+    fn screenshot_completion_rechecks_gpu_failures_and_keeps_existing_files() {
+        let (dir, mut app) = app();
+        let wallpaper = Arc::new(
+            Wallpaper::from_package(&crate::graph::Document::default().compile().unwrap().package)
+                .unwrap(),
+        );
+        app.preview = Some(Preview {
+            generation: 1,
+            wallpaper,
+            parameters: Default::default(),
+            globals: Globals::new(1, 1),
+            status: Default::default(),
+        });
+        let path = dir.path().join("capture.png");
+        app.screenshot = Some(path.clone());
+        let _ = app.capture(true);
+        app.preview.as_ref().unwrap().status.lock().unwrap().error =
+            Some("late GPU failure".into());
+        let screenshot =
+            iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+        let _ = app.update(Message::Screenshot(screenshot.clone()));
+        assert!(path.is_file());
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("late GPU failure")
+        );
+        let original = std::fs::read(&path).unwrap();
+        app.screenshot = Some(path.clone());
+        let _ = app.update(Message::Screenshot(screenshot));
+        assert!(
+            app.exit_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("Could not save screenshot")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    #[test]
     fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {
         assert!(
             serde_json::from_str::<Command>(r#"{"command":"pause_preview","typo":1}"#).is_err()
