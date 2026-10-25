@@ -674,8 +674,11 @@ impl App {
                                 }
                             ))
                             .size(12),
-                            button("×").on_press_maybe(
-                                enabled.then(|| action(Disconnect(id.clone(), (*port).into())))
+                            icon_button(
+                                Icon::Disconnect,
+                                "Disconnect input",
+                                enabled.then(|| action(Disconnect(id.clone(), (*port).into()))),
+                                false
                             )
                         ]
                         .spacing(4),
@@ -721,8 +724,12 @@ impl App {
                         button("Use as output").on_press_maybe(enabled.then_some(action(Output))),
                     );
                 }
-                right = right
-                    .push(button("Delete node").on_press_maybe(enabled.then_some(action(Delete))));
+                right = right.push(icon_button(
+                    Icon::Remove,
+                    "Delete node",
+                    enabled.then_some(action(Delete)),
+                    false,
+                ));
             } else {
                 right = right.push(text("Select a node to edit its properties."));
             }
@@ -771,29 +778,33 @@ impl App {
         if self.focus_mode {
             return iced::widget::stack![
                 canvas,
-                container(button("Show controls · Esc").on_press(Message::Dismiss))
-                    .padding(12)
-                    .align_right(Fill),
+                container(icon_button(
+                    Icon::Unfocus,
+                    "Show controls · Esc",
+                    Some(Message::Dismiss),
+                    false
+                ))
+                .padding(12)
+                .align_right(Fill),
             ]
             .into();
         }
-        let tool = |label, panel| {
-            button(text(label).size(13))
-                .style(if self.graph.panel == Some(panel) {
-                    style::selected
-                } else {
-                    style::quiet
-                })
-                .on_press(action(Panel(panel)))
+        let tool = |icon, label, panel| {
+            icon_button(
+                icon,
+                label,
+                Some(action(Panel(panel))),
+                self.graph.panel == Some(panel),
+            )
         };
         let toolbar = row![
             text(&doc.project.name).size(15),
             space().width(Fill),
-            tool("Add node", PanelKind::Nodes),
-            tool("Properties", PanelKind::Properties),
-            tool("Preview", PanelKind::Preview),
-            tool("Project", PanelKind::Project),
-            button("Focus").on_press(Message::Focus),
+            tool(Icon::Add, "Add node", PanelKind::Nodes),
+            tool(Icon::Adjust, "Properties", PanelKind::Properties),
+            tool(Icon::Display, "Preview", PanelKind::Preview),
+            tool(Icon::Project, "Project", PanelKind::Project),
+            icon_button(Icon::Focus, "Focus · F11", Some(Message::Focus), false),
         ]
         .spacing(4)
         .align_y(iced::Center)
@@ -830,8 +841,13 @@ impl App {
         }
         stage = stage.push(
             row![
-                button("Arrange").on_press_maybe(enabled.then_some(action(Arrange))),
-                button("Fit").on_press(action(Fit)),
+                icon_button(
+                    Icon::Arrange,
+                    "Arrange nodes",
+                    enabled.then_some(action(Arrange)),
+                    false
+                ),
+                icon_button(Icon::Focus, "Fit graph to view", Some(action(Fit)), false),
                 text(format!("{:.0}%", self.graph.zoom * 100.)).size(11),
                 space().width(Fill),
                 text(if self.graph.wire.is_some() {
@@ -880,10 +896,7 @@ impl App {
                     if let Some(p) = &self.graph.preview {
                         content = content
                             .push(p.view(220.))
-                            .push(
-                                button(if self.preview_paused { "Play" } else { "Pause" })
-                                    .on_press(Message::PausePreview),
-                            )
+                            .push(self.playback_button())
                             .push(text(&self.graph.report).size(11));
                     } else {
                         content = content.push(text("Preparing preview…").size(13));
@@ -955,7 +968,12 @@ impl App {
                         row![
                             text(title).size(18),
                             space().width(Fill),
-                            button("×").on_press(action(Panel(panel)))
+                            icon_button(
+                                Icon::Close,
+                                "Close panel",
+                                Some(action(Panel(panel))),
+                                false
+                            )
                         ]
                         .align_y(iced::Center),
                         scrollable(content).height(Fill),

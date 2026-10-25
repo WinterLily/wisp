@@ -446,9 +446,12 @@ impl App {
             row![
                 text("Front to back").size(11),
                 space().width(Fill),
-                button("+ Image").on_press_maybe(
+                icon_button(
+                    Icon::Create,
+                    "Add image layer",
                     (enabled && stack.layers.len() < 6)
-                        .then_some(action(Import(ImportTarget::Layer)))
+                        .then_some(action(Import(ImportTarget::Layer))),
+                    false
                 )
             ]
             .align_y(iced::Center),
@@ -473,30 +476,41 @@ impl App {
         }
         panel = panel.push(
             row![
-                button("Forward").on_press_maybe(
-                    (enabled && i + 1 < stack.layers.len()).then_some(action(Move(true)))
+                icon_button(
+                    Icon::Forward,
+                    "Bring layer forward",
+                    (enabled && i + 1 < stack.layers.len()).then_some(action(Move(true))),
+                    false
                 ),
-                button("Back").on_press_maybe((enabled && i > 0).then_some(action(Move(false)))),
-                button("Remove")
-                    .on_press_maybe((enabled && stack.layers.len() > 1).then_some(action(Remove))),
+                icon_button(
+                    Icon::Backward,
+                    "Send layer backward",
+                    (enabled && i > 0).then_some(action(Move(false))),
+                    false
+                ),
+                icon_button(
+                    Icon::Remove,
+                    "Remove layer",
+                    (enabled && stack.layers.len() > 1).then_some(action(Remove)),
+                    false
+                ),
             ]
             .spacing(2),
         );
-        let tab_button = |label, value| {
-            button(text(label).size(12))
-                .width(Fill)
-                .style(if tab == value {
-                    style::selected
-                } else {
-                    style::quiet
-                })
-                .on_press(action(Tab(value)))
+        let tab_button = |icon, label, value| {
+            container(icon_button(
+                icon,
+                label,
+                Some(action(Tab(value))),
+                tab == value,
+            ))
+            .center_x(Fill)
         };
         panel = panel.push(iced::widget::rule::horizontal(1)).push(
             row![
-                tab_button("Adjust", LayerTab::Adjust),
-                tab_button("Motion", LayerTab::Motion),
-                tab_button("Mask", LayerTab::Mask)
+                tab_button(Icon::Adjust, "Adjust", LayerTab::Adjust),
+                tab_button(Icon::Motion, "Motion", LayerTab::Motion),
+                tab_button(Icon::Mask, "Mask", LayerTab::Mask)
             ]
             .spacing(4),
         );
@@ -640,13 +654,22 @@ impl App {
     fn paint_controls(&self) -> Element<'_, Message> {
         use LayerMessage::*;
         let action = |message| Message::Designer(DesignerMessage::Layer(message));
-        let mut tools = row![pick_list(
-            PaintTool::ALL.as_slice(),
-            Some(self.designer.paint_tool),
-            move |tool| action(Tool(tool))
-        )]
-        .spacing(12)
-        .align_y(iced::Center);
+        let brushes = row(PaintTool::ALL.into_iter().map(|tool| {
+            let icon = match tool {
+                PaintTool::HardRound => Icon::HardRound,
+                PaintTool::Airbrush => Icon::Airbrush,
+                PaintTool::PolygonalLasso => Icon::Lasso,
+                PaintTool::MagicWand => Icon::MagicWand,
+            };
+            icon_button(
+                icon,
+                tool.to_string(),
+                Some(action(Tool(tool))),
+                self.designer.paint_tool == tool,
+            )
+        }))
+        .spacing(4);
+        let mut tools = row![brushes].spacing(12).align_y(iced::Center);
         if self.designer.paint_tool.is_brush() {
             tools = tools.push(text("Size").size(12)).push(
                 slider(0.005..=0.25, self.designer.brush.max(0.005), move |value| {
@@ -719,32 +742,40 @@ impl App {
         if self.focus_mode {
             return iced::widget::stack![
                 canvas,
-                container(button("Show controls · F11").on_press(Message::Focus))
-                    .padding(12)
-                    .align_right(Fill),
+                container(icon_button(
+                    Icon::Unfocus,
+                    "Show controls · F11",
+                    Some(Message::Focus),
+                    false
+                ))
+                .padding(12)
+                .align_right(Fill),
             ]
             .into();
         }
         column![
             row![
-                button("Done").on_press(action(LayerMessage::Expand(false))),
+                icon_button(
+                    Icon::Done,
+                    "Done painting",
+                    Some(action(LayerMessage::Expand(false))),
+                    false
+                ),
                 text("Paint mask").size(15),
                 space().width(Fill),
-                button("Paint")
-                    .style(if !self.designer.erase {
-                        style::selected
-                    } else {
-                        style::quiet
-                    })
-                    .on_press(action(LayerMessage::Erase(false))),
-                button("Erase")
-                    .style(if self.designer.erase {
-                        style::selected
-                    } else {
-                        style::quiet
-                    })
-                    .on_press(action(LayerMessage::Erase(true))),
-                button("Focus").on_press(Message::Focus),
+                icon_button(
+                    Icon::Paint,
+                    "Paint mode",
+                    Some(action(LayerMessage::Erase(false))),
+                    !self.designer.erase
+                ),
+                icon_button(
+                    Icon::Erase,
+                    "Eraser mode",
+                    Some(action(LayerMessage::Erase(true))),
+                    self.designer.erase
+                ),
+                icon_button(Icon::Focus, "Focus · F11", Some(Message::Focus), false),
             ]
             .spacing(10)
             .align_y(iced::Center)
