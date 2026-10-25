@@ -60,6 +60,17 @@ pub struct Mask {
     pub composition: bool,
     pub effect: bool,
 }
+impl Mask {
+    fn new(asset: String, composition: bool) -> Self {
+        Self {
+            asset,
+            feather: 0.,
+            invert: false,
+            composition,
+            effect: true,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
@@ -73,6 +84,15 @@ pub struct Layer {
     pub pivot: [f32; 2],
     pub blend: BlendMode,
     pub mask: Option<Mask>,
+    // Preserve the legacy JSON shape until its generated graph has been verified on open.
+    #[serde(flatten)]
+    pub motion: EffectSettings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<LayerEffect>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EffectSettings {
     pub effect: Effect,
     pub direction: f32,
     pub amplitude: f32,
@@ -89,6 +109,57 @@ pub struct Layer {
     pub strength: f32,
     pub displacement: Option<String>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEffect {
+    pub visible: bool,
+    pub mask: Option<Mask>,
+    pub settings: EffectSettings,
+}
+
+impl LayerEffect {
+    pub fn new(effect: Effect) -> Self {
+        let mut settings = EffectSettings::default();
+        settings.preset(effect);
+        Self {
+            visible: true,
+            mask: None,
+            settings,
+        }
+    }
+
+    pub fn value(&self, id: ControlId) -> f32 {
+        if id == ControlId::Feather {
+            self.mask.as_ref().map_or(0., |mask| mask.feather)
+        } else {
+            self.settings.value(id)
+        }
+    }
+
+    pub fn set_value(&mut self, id: ControlId, value: f32) -> Result<()> {
+        validate_control(id, value)?;
+        if id == ControlId::Feather {
+            self.mask.as_mut().context("effect has no mask")?.feather = value;
+            Ok(())
+        } else {
+            self.settings.set_value(id, value)
+        }
+    }
+}
+
+impl std::ops::Deref for Layer {
+    type Target = EffectSettings;
+    fn deref(&self) -> &Self::Target {
+        &self.motion
+    }
+}
+impl std::ops::DerefMut for Layer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.motion
+    }
+}
+
 fn unit_scale() -> f32 {
     1.0
 }
@@ -105,6 +176,56 @@ impl Layer {
             pivot: [0.5; 2],
             blend: BlendMode::Alpha,
             mask: None,
+            motion: EffectSettings::default(),
+            effects: vec![],
+        }
+    }
+    pub fn preset(&mut self, effect: Effect) {
+        self.motion.preset(effect);
+    }
+    pub fn value(&self, id: ControlId) -> f32 {
+        match id {
+            ControlId::PositionX => self.position[0],
+            ControlId::PositionY => self.position[1],
+            ControlId::ScaleX => self.scale[0],
+            ControlId::ScaleY => self.scale[1],
+            ControlId::PivotX => self.pivot[0],
+            ControlId::PivotY => self.pivot[1],
+            ControlId::Rotation => self.rotation,
+            ControlId::Opacity => self.opacity,
+            id if id.is_effect() => self.motion.value(id),
+            ControlId::Feather => self.mask.as_ref().map_or(0., |m| m.feather),
+            _ => unreachable!(),
+        }
+    }
+    pub fn set_value(
+        &mut self,
+        id: impl TryInto<ControlId, Error: std::fmt::Display>,
+        value: f32,
+    ) -> Result<()> {
+        let id = id.try_into().map_err(|e| anyhow::anyhow!("{e}"))?;
+        validate_control(id, value)?;
+        match id {
+            ControlId::PositionX => self.position[0] = value,
+            ControlId::PositionY => self.position[1] = value,
+            ControlId::ScaleX => self.scale[0] = value,
+            ControlId::ScaleY => self.scale[1] = value,
+            ControlId::PivotX => self.pivot[0] = value,
+            ControlId::PivotY => self.pivot[1] = value,
+            ControlId::Rotation => self.rotation = value,
+            ControlId::Opacity => self.opacity = value,
+            id if id.is_effect() => self.motion.set_value(id, value)?,
+            ControlId::Feather => {
+                self.mask.as_mut().context("layer has no mask")?.feather = value;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+}
+impl Default for EffectSettings {
+    fn default() -> Self {
+        Self {
             effect: Effect::None,
             direction: 0.,
             amplitude: 0.02,
@@ -119,6 +240,8 @@ impl Layer {
             displacement: None,
         }
     }
+}
+impl EffectSettings {
     pub fn preset(&mut self, effect: Effect) {
         self.effect = effect;
         self.amplitude = if effect == Effect::Clothing {
@@ -129,16 +252,9 @@ impl Layer {
         self.frequency = if effect == Effect::Clothing { 2.5 } else { 1.2 };
         self.speed = if effect == Effect::Hair { 1.5 } else { 1. };
     }
+
     pub fn value(&self, id: ControlId) -> f32 {
         match id {
-            ControlId::PositionX => self.position[0],
-            ControlId::PositionY => self.position[1],
-            ControlId::ScaleX => self.scale[0],
-            ControlId::ScaleY => self.scale[1],
-            ControlId::PivotX => self.pivot[0],
-            ControlId::PivotY => self.pivot[1],
-            ControlId::Rotation => self.rotation,
-            ControlId::Opacity => self.opacity,
             ControlId::Direction => self.direction,
             ControlId::Amplitude => self.amplitude,
             ControlId::Frequency => self.frequency,
@@ -149,29 +265,12 @@ impl Layer {
             ControlId::SizeX => self.size_x,
             ControlId::SizeY => self.size_y,
             ControlId::Strength => self.strength,
-            ControlId::Feather => self.mask.as_ref().map_or(0., |m| m.feather),
+            _ => 0.,
         }
     }
-    pub fn set_value(
-        &mut self,
-        id: impl TryInto<ControlId, Error: std::fmt::Display>,
-        value: f32,
-    ) -> Result<()> {
-        let id = id.try_into().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let control = id.metadata();
-        ensure!(
-            value.is_finite() && (control.min..=control.max).contains(&value),
-            "layer control out of range"
-        );
+    pub fn set_value(&mut self, id: ControlId, value: f32) -> Result<()> {
+        validate_control(id, value)?;
         match id {
-            ControlId::PositionX => self.position[0] = value,
-            ControlId::PositionY => self.position[1] = value,
-            ControlId::ScaleX => self.scale[0] = value,
-            ControlId::ScaleY => self.scale[1] = value,
-            ControlId::PivotX => self.pivot[0] = value,
-            ControlId::PivotY => self.pivot[1] = value,
-            ControlId::Rotation => self.rotation = value,
-            ControlId::Opacity => self.opacity = value,
             ControlId::Direction => self.direction = value,
             ControlId::Amplitude => self.amplitude = value,
             ControlId::Frequency => self.frequency = value,
@@ -182,13 +281,20 @@ impl Layer {
             ControlId::SizeX => self.size_x = value,
             ControlId::SizeY => self.size_y = value,
             ControlId::Strength => self.strength = value,
-            ControlId::Feather => {
-                self.mask.as_mut().context("layer has no mask")?.feather = value;
-            }
+            _ => anyhow::bail!("not an effect control"),
         }
         Ok(())
     }
 }
+fn validate_control(id: ControlId, value: f32) -> Result<()> {
+    let control = id.metadata();
+    ensure!(
+        value.is_finite() && (control.min..=control.max).contains(&value),
+        "layer control out of range"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlId {
     Opacity,
@@ -219,6 +325,22 @@ pub struct Control {
     pub max: f32,
 }
 impl ControlId {
+    fn is_effect(self) -> bool {
+        matches!(
+            self,
+            Self::Direction
+                | Self::Amplitude
+                | Self::Frequency
+                | Self::Speed
+                | Self::Density
+                | Self::Size
+                | Self::RainDirection
+                | Self::SizeX
+                | Self::SizeY
+                | Self::Strength
+        )
+    }
+
     pub fn metadata(self) -> &'static Control {
         CONTROLS
             .iter()
@@ -371,11 +493,21 @@ pub const CONTROLS: &[Control] = &[
         max: 1.,
     },
 ];
+pub const MAX_EFFECTS_PER_LAYER: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerTarget {
+    Image(usize),
+    Effect(usize, usize),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportTarget {
     Layer,
     Mask(usize),
     Displacement(usize),
+    EffectMask(usize, usize),
+    EffectDisplacement(usize, usize),
 }
 impl From<Option<(usize, bool)>> for ImportTarget {
     fn from(target: Option<(usize, bool)>) -> Self {
@@ -398,15 +530,15 @@ pub struct Stack {
 impl Stack {
     pub fn new(asset: Asset) -> Self {
         Self {
-            version: 2,
+            version: 3,
             layers: vec![Layer::new("Background".into(), "background".into())],
             assets: Arc::new(BTreeMap::from([("background".into(), asset)])),
         }
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            (1..=2).contains(&self.version) && (1..=6).contains(&self.layers.len()),
-            "layers require version 1 or 2 and 1–6 layers"
+            (1..=3).contains(&self.version) && (1..=6).contains(&self.layers.len()),
+            "layers require version 1–3 and 1–6 layers"
         );
         ensure!(self.assets.len() <= 20, "layer source assets exceed limit");
         for l in &self.layers {
@@ -422,6 +554,34 @@ impl Stack {
                     "invalid {}",
                     c.label
                 );
+            }
+            ensure!(
+                l.effects.len() <= MAX_EFFECTS_PER_LAYER,
+                "maximum eight effects per image layer"
+            );
+            for effect in &l.effects {
+                ensure!(
+                    effect.settings.effect != Effect::None,
+                    "attached effect needs a type"
+                );
+                for control in CONTROLS
+                    .iter()
+                    .filter(|control| control.id.is_effect() || control.id == ControlId::Feather)
+                {
+                    validate_control(control.id, effect.value(control.id))?;
+                }
+                if let Some(mask) = &effect.mask {
+                    ensure!(
+                        self.assets.contains_key(&mask.asset),
+                        "missing effect mask image"
+                    );
+                }
+                if let Some(asset) = &effect.settings.displacement {
+                    ensure!(
+                        self.assets.contains_key(asset),
+                        "missing effect displacement image"
+                    );
+                }
             }
             if let Some(m) = &l.mask {
                 ensure!(self.assets.contains_key(&m.asset), "missing mask image");
@@ -445,12 +605,16 @@ impl Stack {
         let target = target.into();
         let bytes = wisp_compiler::read_source_image(path)?;
         let decoded = wisp_compiler::decode_source_image(&bytes)?;
-        if let ImportTarget::Mask(i) | ImportTarget::Displacement(i) = target {
-            ensure!(i < self.layers.len(), "missing layer");
-        } else {
-            ensure!(self.layers.len() < 6, "maximum six layers");
+        match target {
+            ImportTarget::Mask(i) | ImportTarget::Displacement(i) => {
+                self.target_mask(LayerTarget::Image(i))?;
+            }
+            ImportTarget::EffectMask(i, effect) | ImportTarget::EffectDisplacement(i, effect) => {
+                self.target_mask(LayerTarget::Effect(i, effect))?;
+            }
+            ImportTarget::Layer => ensure!(self.layers.len() < 6, "maximum six layers"),
         }
-        let asset = if matches!(target, ImportTarget::Mask(_)) {
+        let asset = if matches!(target, ImportTarget::Mask(_) | ImportTarget::EffectMask(..)) {
             let image = decoded.into_rgba8();
             let gray = image::GrayImage::from_fn(image.width(), image.height(), |x, y| {
                 let p = image.get_pixel(x, y).0;
@@ -475,20 +639,18 @@ impl Stack {
             }
         };
         let id = self.insert(asset)?;
-        if let ImportTarget::Mask(i) | ImportTarget::Displacement(i) = target {
-            if matches!(target, ImportTarget::Displacement(_)) {
-                self.layers[i].displacement = Some(id);
-            } else {
-                self.layers[i].mask = Some(Mask {
-                    asset: id,
-                    feather: 0.,
-                    invert: false,
-                    composition: false,
-                    effect: true,
-                });
+        match target {
+            ImportTarget::Mask(i) => {
+                *self.target_mask_mut(LayerTarget::Image(i))? = Some(Mask::new(id, false))
             }
-        } else {
-            self.layers.push(Layer::new(
+            ImportTarget::EffectMask(i, effect) => {
+                *self.target_mask_mut(LayerTarget::Effect(i, effect))? = Some(Mask::new(id, false))
+            }
+            ImportTarget::Displacement(i) => self.layers[i].displacement = Some(id),
+            ImportTarget::EffectDisplacement(i, effect) => {
+                self.layers[i].effects[effect].settings.displacement = Some(id)
+            }
+            ImportTarget::Layer => self.layers.push(Layer::new(
                 path.file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
@@ -496,24 +658,128 @@ impl Stack {
                     .take(128)
                     .collect(),
                 id,
-            ));
+            )),
         }
         self.prune();
         Ok(())
     }
+    pub fn target_mask(&self, target: LayerTarget) -> Result<&Option<Mask>> {
+        match target {
+            LayerTarget::Image(layer) => Ok(&self.layers.get(layer).context("missing layer")?.mask),
+            LayerTarget::Effect(layer, effect) => Ok(&self
+                .layers
+                .get(layer)
+                .context("missing layer")?
+                .effects
+                .get(effect)
+                .context("missing effect")?
+                .mask),
+        }
+    }
+    pub fn target_mask_mut(&mut self, target: LayerTarget) -> Result<&mut Option<Mask>> {
+        match target {
+            LayerTarget::Image(layer) => {
+                Ok(&mut self.layers.get_mut(layer).context("missing layer")?.mask)
+            }
+            LayerTarget::Effect(layer, effect) => Ok(&mut self
+                .layers
+                .get_mut(layer)
+                .context("missing layer")?
+                .effects
+                .get_mut(effect)
+                .context("missing effect")?
+                .mask),
+        }
+    }
     pub fn blank_mask(&mut self, i: usize, white: bool) -> Result<()> {
-        ensure!(i < self.layers.len(), "missing layer");
+        self.blank_mask_for(LayerTarget::Image(i), white)?;
+        self.layers[i].mask.as_mut().unwrap().composition = false;
+        Ok(())
+    }
+    pub fn blank_mask_for(&mut self, target: LayerTarget, white: bool) -> Result<()> {
+        self.target_mask(target)?;
         let image =
             image::GrayImage::from_pixel(256, 256, image::Luma([if white { 255 } else { 0 }]));
-        let id = self.insert(encode(image::DynamicImage::ImageLuma8(image))?)?;
-        self.layers[i].mask = Some(Mask {
-            asset: id,
-            feather: 0.005,
-            invert: false,
-            composition: false,
-            effect: true,
-        });
+        let asset = encode(image::DynamicImage::ImageLuma8(image))?;
+        // Replacing a mask must still work when all asset slots are occupied.
+        let existing = self
+            .target_mask(target)?
+            .as_ref()
+            .map(|mask| mask.asset.clone());
+        let id = if let Some(id) = existing {
+            Arc::make_mut(&mut self.assets).insert(id.clone(), asset);
+            id
+        } else {
+            self.insert(asset)?
+        };
+        let mut mask = Mask::new(id, matches!(target, LayerTarget::Image(_)));
+        mask.feather = 0.005;
+        *self.target_mask_mut(target)? = Some(mask);
         self.prune();
+        Ok(())
+    }
+    pub fn add_effect(&mut self, layer: usize, effect: Effect) -> Result<usize> {
+        let image = self.layers.get(layer).context("missing layer")?;
+        ensure!(effect != Effect::None, "choose an effect");
+        ensure!(
+            image.effects.len() < MAX_EFFECTS_PER_LAYER,
+            "maximum eight effects per image layer"
+        );
+        let index = image.effects.len();
+        self.layers[layer].effects.push(LayerEffect::new(effect));
+        if let Err(error) = self.blank_mask_for(
+            LayerTarget::Effect(layer, index),
+            !matches!(effect, Effect::Hair | Effect::Clothing),
+        ) {
+            self.layers[layer].effects.pop();
+            return Err(error);
+        }
+        self.version = 3;
+        Ok(index)
+    }
+    pub fn upgrade_effects(&mut self) -> Result<()> {
+        for index in 0..self.layers.len() {
+            if self.layers[index].effect == Effect::None {
+                continue;
+            }
+            ensure!(
+                self.layers[index].effects.len() < MAX_EFFECTS_PER_LAYER,
+                "maximum eight effects per image layer"
+            );
+            let mut mask = self.layers[index].mask.clone().filter(|mask| mask.effect);
+            if let Some(mask) = &mut mask {
+                if self.layers[index]
+                    .mask
+                    .as_ref()
+                    .is_some_and(|mask| mask.composition)
+                {
+                    mask.asset = self.insert(self.assets[&mask.asset].clone())?;
+                } else {
+                    self.layers[index].mask = None;
+                }
+                mask.composition = false;
+                mask.effect = true;
+            }
+            let settings = self.layers[index].motion.clone();
+            let unmasked_motion = matches!(settings.effect, Effect::Hair | Effect::Clothing)
+                && self.layers[index]
+                    .mask
+                    .as_ref()
+                    .is_some_and(|mask| !mask.effect);
+            self.layers[index].effects.insert(
+                0,
+                LayerEffect {
+                    visible: true,
+                    mask,
+                    settings,
+                },
+            );
+            if unmasked_motion {
+                self.blank_mask_for(LayerTarget::Effect(index, 0), true)?;
+            }
+            self.layers[index].effect = Effect::None;
+        }
+        self.version = 3;
         Ok(())
     }
     /// Paint a continuous capsule in layer-local image space. Values are grayscale.
@@ -525,10 +791,19 @@ impl Stack {
         radius: f32,
         value: u8,
     ) -> Result<()> {
+        self.paint_target(LayerTarget::Image(i), from, to, radius, value)
+    }
+    pub fn paint_target(
+        &mut self,
+        target: LayerTarget,
+        from: [f32; 2],
+        to: [f32; 2],
+        radius: f32,
+        value: u8,
+    ) -> Result<()> {
         let id = self
-            .layers
-            .get(i)
-            .and_then(|l| l.mask.as_ref())
+            .target_mask(target)?
+            .as_ref()
             .context("create a mask first")?
             .asset
             .clone();
@@ -547,6 +822,13 @@ impl Stack {
                 std::iter::once(l.asset.clone())
                     .chain(l.mask.iter().map(|m| m.asset.clone()))
                     .chain(l.displacement.clone())
+                    .chain(l.effects.iter().flat_map(|effect| {
+                        effect
+                            .mask
+                            .iter()
+                            .map(|mask| mask.asset.clone())
+                            .chain(effect.settings.displacement.clone())
+                    }))
             })
             .chain(std::iter::once("background".into()))
             .collect();
@@ -650,10 +932,24 @@ impl Stack {
                     strength,
                 });
             }
+            for effect in l.effects.iter().rev().filter(|effect| effect.visible) {
+                let mask = b.mask(effect.mask.as_ref(), &local, &one);
+                sample_uv = b.effect_uv(
+                    &effect.settings,
+                    &sample_uv,
+                    &local,
+                    &mask,
+                    effect.mask.is_some(),
+                );
+            }
             let mut color = b.add(Op::Image {
                 asset: l.asset.clone(),
                 uv: sample_uv.clone(),
             });
+            for effect in l.effects.iter().filter(|effect| effect.visible) {
+                let mask = b.mask(effect.mask.as_ref(), &local, &one);
+                color = b.effect_color(&effect.settings, color, &local, mask);
+            }
             if self.version == 1
                 && matches!(l.effect, Effect::Droplets | Effect::Rain | Effect::Ripples)
             {
@@ -735,6 +1031,114 @@ struct Builder<'a> {
     serial: usize,
 }
 impl Builder<'_> {
+    fn mask(&mut self, mask: Option<&Mask>, uv: &str, one: &str) -> String {
+        let Some(mask) = mask else {
+            return one.into();
+        };
+        let color = self.add(Op::Image {
+            asset: mask.asset.clone(),
+            uv: uv.into(),
+        });
+        let feather = self.constant(V::Float(mask.feather));
+        let invert = self.constant(V::Boolean(mask.invert));
+        self.add(Op::Mask {
+            color,
+            feather,
+            invert,
+        })
+    }
+    fn effect_uv(
+        &mut self,
+        settings: &EffectSettings,
+        uv: &str,
+        local: &str,
+        mask: &str,
+        has_mask: bool,
+    ) -> String {
+        let mask = if matches!(settings.effect, Effect::Hair | Effect::Clothing) && !has_mask {
+            self.constant(V::Float(0.))
+        } else {
+            mask.into()
+        };
+        match settings.effect {
+            Effect::Hair | Effect::Clothing | Effect::Wave | Effect::Warp => {
+                let direction = self.constant(V::Vector2([
+                    settings.direction.to_radians().cos(),
+                    settings.direction.to_radians().sin(),
+                ]));
+                let amplitude = self.constant(V::Float(settings.amplitude));
+                let frequency = self.constant(V::Float(settings.frequency));
+                let speed = self.constant(V::Float(settings.speed));
+                self.add(
+                    if matches!(settings.effect, Effect::Clothing | Effect::Warp) {
+                        Op::Warp {
+                            uv: uv.into(),
+                            mask,
+                            direction,
+                            amplitude,
+                            frequency,
+                            speed,
+                        }
+                    } else {
+                        Op::Wave {
+                            uv: uv.into(),
+                            mask,
+                            direction,
+                            amplitude,
+                            frequency,
+                            speed,
+                        }
+                    },
+                )
+            }
+            Effect::Displacement if settings.displacement.is_some() => {
+                let map = self.add(Op::Image {
+                    asset: settings.displacement.clone().unwrap(),
+                    uv: local.into(),
+                });
+                let strength = self.constant(V::Float(settings.strength * 0.15));
+                self.add(Op::Displacement {
+                    uv: uv.into(),
+                    map,
+                    mask,
+                    strength,
+                })
+            }
+            _ => uv.into(),
+        }
+    }
+    fn effect_color(
+        &mut self,
+        settings: &EffectSettings,
+        color: String,
+        uv: &str,
+        mask: String,
+    ) -> String {
+        let kind = match settings.effect {
+            Effect::Rain => WeatherKind::Rain,
+            Effect::Ripples => WeatherKind::Ripples,
+            Effect::Droplets => WeatherKind::Droplets,
+            _ => return color,
+        };
+        let density = self.constant(V::Float(settings.density));
+        let size = self.constant(V::Float(settings.size));
+        let speed = self.constant(V::Float(settings.speed));
+        let strength = self.constant(V::Float(settings.strength));
+        self.add(Op::Weather {
+            rain_direction: settings.rain_direction,
+            size_x: settings.size_x,
+            size_y: settings.size_y,
+            color,
+            uv: uv.into(),
+            mask,
+            density,
+            size,
+            speed,
+            strength,
+            kind,
+        })
+    }
+
     fn add(&mut self, op: Op) -> String {
         let id = format!("layer_n{}", self.serial);
         self.serial += 1;
