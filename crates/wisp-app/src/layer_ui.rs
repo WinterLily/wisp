@@ -9,8 +9,17 @@ use iced::{
     },
 };
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::ui) enum LayerTab {
+    Adjust,
+    #[default]
+    Motion,
+    Mask,
+}
+
 #[derive(Clone)]
 pub(in crate::ui) enum LayerMessage {
+    Tab(LayerTab),
     Enable,
     Select(usize),
     Import(Option<(usize, bool)>),
@@ -126,6 +135,10 @@ impl App {
     }
     pub(super) fn layer_update(&mut self, message: LayerMessage) -> Task<Message> {
         use LayerMessage::*;
+        if let Tab(tab) = &message {
+            self.designer.layer_tab = *tab;
+            return Task::none();
+        }
         let painting = matches!(
             message,
             Paint(..) | StrokeEnd | Brush(_) | Erase(_) | Expand(_)
@@ -301,31 +314,39 @@ impl App {
         }
         Task::none()
     }
-    pub(super) fn layers_view(&self, stack: &Stack) -> Element<'_, Message> {
+    pub(super) fn layers_view<'a>(&'a self, stack: &'a Stack) -> Element<'a, Message> {
         use LayerMessage::*;
         let action = |m| Message::Designer(DesignerMessage::Layer(m));
         let enabled = !self.busy;
         let i = self.designer.layer.min(stack.layers.len() - 1);
         let l = &stack.layers[i];
+        let tab = self.designer.layer_tab;
         let mut panel = column![
-            text("Image layers · front to back").size(20),
-            button("Add image layer…").on_press_maybe(
-                (enabled && stack.layers.len() < 6).then_some(action(Import(None)))
-            )
+            row![
+                text("Front to back").size(11),
+                space().width(Fill),
+                button("+ Image").on_press_maybe(
+                    (enabled && stack.layers.len() < 6).then_some(action(Import(None)))
+                )
+            ]
+            .align_y(iced::Center),
         ]
-        .spacing(8);
+        .spacing(10);
         for (index, layer) in stack.layers.iter().enumerate().rev() {
             panel = panel.push(
                 row![
                     checkbox(layer.visible).on_toggle(move |v| action(Visible(index, v))),
-                    button(text(format!(
-                        "{}{}",
-                        if i == index { "● " } else { "" },
-                        layer.name
-                    )))
-                    .on_press_maybe(enabled.then_some(action(Select(index))))
+                    button(text(&layer.name).size(14))
+                        .width(Fill)
+                        .style(if i == index {
+                            style::selected
+                        } else {
+                            style::quiet
+                        })
+                        .on_press_maybe(enabled.then_some(action(Select(index)))),
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::Center),
             );
         }
         panel = panel.push(
@@ -333,27 +354,64 @@ impl App {
                 button("Forward").on_press_maybe(
                     (enabled && i + 1 < stack.layers.len()).then_some(action(Move(true)))
                 ),
-                button("Backward")
-                    .on_press_maybe((enabled && i > 0).then_some(action(Move(false)))),
+                button("Back").on_press_maybe((enabled && i > 0).then_some(action(Move(false)))),
                 button("Remove")
-                    .on_press_maybe((enabled && stack.layers.len() > 1).then_some(action(Remove)))
+                    .on_press_maybe((enabled && stack.layers.len() > 1).then_some(action(Remove))),
             ]
-            .spacing(6),
+            .spacing(2),
         );
-        panel = panel
-            .push(text_input("Layer name", &l.name).on_input(move |v| action(Name(v))))
-            .push(pick_list(
-                wisp_ir::BlendMode::ALL.as_slice(),
-                Some(l.blend),
-                move |v| action(Blend(v)),
-            ))
-            .push(text("Layer effect").size(18))
-            .push(pick_list(
-                crate::layers::Effect::ALL.as_slice(),
-                Some(l.effect),
-                move |v| action(Effect(v)),
-            ));
+        let tab_button = |label, value| {
+            button(text(label).size(12))
+                .width(Fill)
+                .style(if tab == value {
+                    style::selected
+                } else {
+                    style::quiet
+                })
+                .on_press(action(Tab(value)))
+        };
+        panel = panel.push(iced::widget::rule::horizontal(1)).push(
+            row![
+                tab_button("Adjust", LayerTab::Adjust),
+                tab_button("Motion", LayerTab::Motion),
+                tab_button("Mask", LayerTab::Mask)
+            ]
+            .spacing(4),
+        );
+        if tab == LayerTab::Adjust {
+            panel = panel
+                .push(text_input("Layer name", &l.name).on_input(move |v| action(Name(v))))
+                .push(
+                    pick_list(
+                        wisp_ir::BlendMode::ALL.as_slice(),
+                        Some(l.blend),
+                        move |v| action(Blend(v)),
+                    )
+                    .width(Fill),
+                );
+        }
+        if tab == LayerTab::Motion {
+            panel = panel.push(
+                pick_list(
+                    crate::layers::Effect::ALL.as_slice(),
+                    Some(l.effect),
+                    move |v| action(Effect(v)),
+                )
+                .width(Fill),
+            );
+            if l.effect == crate::layers::Effect::None {
+                panel = panel.push(text("Choose an effect to bring this layer to life.").size(13));
+            }
+        }
         for c in crate::layers::CONTROLS {
+            let transform =
+                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&c.0);
+            if (tab == LayerTab::Adjust && !transform)
+                || (tab == LayerTab::Motion && (transform || c.0 == "feather"))
+                || (tab == LayerTab::Mask && c.0 != "feather")
+            {
+                continue;
+            }
             let weather = matches!(
                 l.effect,
                 crate::layers::Effect::Droplets
@@ -382,76 +440,133 @@ impl App {
             {
                 continue;
             }
-            panel = panel
-                .push(text(format!("{}  {:.3}", c.1, l.value(c.0))).size(13))
-                .push(
-                    slider(c.2..=c.3, l.value(c.0), move |v| {
-                        action(Value(c.0.into(), v))
-                    })
+            panel = panel.push(
+                column![
+                    row![
+                        text(c.1).size(12),
+                        space().width(Fill),
+                        text(format!("{:.2}", l.value(c.0))).size(12)
+                    ]
+                    .spacing(8),
+                    slider(c.2..=c.3, l.value(c.0), move |v| action(Value(
+                        c.0.into(),
+                        v
+                    )))
                     .step((c.3 - c.2) / 200.)
                     .on_release(action(Commit)),
-                );
+                ]
+                .spacing(7),
+            );
         }
-        if l.effect == crate::layers::Effect::Displacement {
+        if tab == LayerTab::Motion && l.effect == crate::layers::Effect::Displacement {
             panel = panel.push(
                 button("Choose displacement map…")
                     .on_press_maybe(enabled.then_some(action(Import(Some((i, true)))))),
             );
         }
-        panel = panel
-            .push(text("Mask · white affects, black anchors").size(18))
-            .push(
-                row![
+        if tab == LayerTab::Mask {
+            panel = panel.push(text("Paint where this layer moves or appears.").size(13));
+            if let Some(m) = &l.mask {
+                panel = panel
+                    .push(
+                        button("Paint mask…")
+                            .style(iced_button::primary)
+                            .width(Fill)
+                            .on_press(action(Expand(true))),
+                    )
+                    .push(
+                        checkbox(m.invert)
+                            .label("Invert")
+                            .on_toggle(move |v| action(MaskFlag(0, v))),
+                    )
+                    .push(
+                        checkbox(m.composition)
+                            .label("Affect layer opacity")
+                            .on_toggle(move |v| action(MaskFlag(1, v))),
+                    )
+                    .push(
+                        checkbox(m.effect)
+                            .label("Affect motion strength")
+                            .on_toggle(move |v| action(MaskFlag(2, v))),
+                    )
+                    .push(
+                        button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true)))),
+                    )
+                    .push(
+                        button("Clear to black")
+                            .on_press_maybe(enabled.then_some(action(Mask(false)))),
+                    )
+                    .push(
+                        button("Remove mask").on_press_maybe(enabled.then_some(action(ClearMask))),
+                    );
+            } else {
+                panel = panel.push(
+                    button("Create a mask")
+                        .style(iced_button::primary)
+                        .width(Fill)
+                        .on_press_maybe(enabled.then_some(action(Mask(false)))),
+                );
+            }
+            panel = panel
+                .push(
                     button("Import mask…")
                         .on_press_maybe(enabled.then_some(action(Import(Some((i, false)))))),
-                    button("New black").on_press_maybe(enabled.then_some(action(Mask(false)))),
-                    button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true))))
-                ]
-                .spacing(6),
-            );
-        if let Some(m) = &l.mask {
-            panel = panel.push(checkbox(m.invert).label("Invert mask").on_toggle(move |v| action(MaskFlag(0, v))))
-                .push(checkbox(m.composition).label("Mask layer opacity").on_toggle(move |v| action(MaskFlag(1, v))))
-                .push(checkbox(m.effect).label("Mask effect strength").on_toggle(move |v| action(MaskFlag(2, v))))
-                .push(button("Remove mask").on_press_maybe(enabled.then_some(action(ClearMask))))
-                .push(text("Paint selected regions in teal; erase to anchor them. Wallpaper preview updates every two seconds while editing.").size(13))
-                .push(checkbox(self.designer.erase).label("Erase to black").on_toggle(move |v| action(Erase(v))))
-                .push(text("Brush radius").size(13)).push(slider(0.005..=0.25, self.designer.brush.max(0.005), move |v| action(Brush(v))).step(0.005))
-                .push(button("Expand mask editor").on_press(action(Expand(true))))
-                .push(canvas::Canvas::new(MaskCanvas { designer: &self.designer, enabled: enabled || self.designer.compiling }).width(Fill).height(320));
+                )
+                .push(text("White reveals · Black anchors").size(11));
         }
         panel.into()
     }
     pub(super) fn expanded_painter(&self) -> Element<'_, Message> {
         let action = |m| Message::Designer(DesignerMessage::Layer(m));
+        let canvas = canvas::Canvas::new(MaskCanvas {
+            designer: &self.designer,
+            enabled: !self.busy || self.designer.compiling,
+        })
+        .width(Fill)
+        .height(Fill);
+        if self.focus_mode {
+            return iced::widget::stack![
+                canvas,
+                container(button("Show controls · F11").on_press(Message::Focus))
+                    .padding(12)
+                    .align_right(Fill),
+            ]
+            .into();
+        }
         column![
             row![
-                text("Paint mask").size(26),
+                button("Done").on_press(action(LayerMessage::Expand(false))),
+                text("Paint mask").size(15),
                 space().width(Fill),
-                button("Back to layers").on_press(action(LayerMessage::Expand(false)))
-            ]
-            .spacing(12),
-            row![
-                checkbox(self.designer.erase)
-                    .label("Erase")
-                    .on_toggle(move |v| action(LayerMessage::Erase(v))),
-                text("Brush size"),
+                button("Paint")
+                    .style(if !self.designer.erase {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press(action(LayerMessage::Erase(false))),
+                button("Erase")
+                    .style(if self.designer.erase {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press(action(LayerMessage::Erase(true))),
+                text("Size").size(12),
                 slider(0.005..=0.25, self.designer.brush.max(0.005), move |v| {
                     action(LayerMessage::Brush(v))
                 })
-                .width(240)
+                .width(140)
                 .step(0.005),
-                text("Teal = selected · Preview updates every 2 seconds")
+                button("Focus").on_press(Message::Focus),
             ]
-            .spacing(16),
-            canvas::Canvas::new(MaskCanvas {
-                designer: &self.designer,
-                enabled: !self.busy || self.designer.compiling
-            })
-            .width(Fill)
-            .height(Fill)
+            .spacing(10)
+            .align_y(iced::Center)
+            .padding([4, 8]),
+            canvas,
+            text("Teal shows the selected area · Live preview updates as you paint").size(11),
         ]
-        .spacing(12)
+        .spacing(8)
         .height(Fill)
         .into()
     }
@@ -529,12 +644,20 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         &self,
         _: &PaintState,
         renderer: &iced::Renderer,
-        _: &iced::Theme,
+        theme: &iced::Theme,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
-        f.fill_rectangle(Point::ORIGIN, bounds.size(), Color::from_rgb8(30, 35, 45));
+        f.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            if theme.extended_palette().is_dark {
+                Color::from_rgb8(18, 19, 21)
+            } else {
+                Color::from_rgb8(224, 223, 220)
+            },
+        );
         let rect = self.image_rect(bounds.size());
         if let Some(source) = &self.designer.paint_source {
             f.draw_image(rect, source);

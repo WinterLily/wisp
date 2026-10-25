@@ -4,6 +4,8 @@ mod designer_ui;
 mod graph_canvas;
 #[path = "graph_ui.rs"]
 mod graph_ui;
+#[path = "style.rs"]
+mod style;
 use crate::{
     daemon,
     library::{Item, Library, Settings},
@@ -13,11 +15,11 @@ use anyhow::{Context, Result, ensure};
 use designer_ui::{Designer, DesignerMessage};
 use iced::{
     Element,
-    Length::{Fill, FillPortion},
-    Subscription, Task, Theme,
+    Length::Fill,
+    Subscription, Task,
     widget::{
-        button, checkbox, column, container, image, pick_list, row, scrollable, slider, space,
-        text, text_input,
+        button as iced_button, checkbox, column, container, image, pick_list, row,
+        scrollable as iced_scrollable, slider, space, text, text_input,
     },
 };
 use std::{
@@ -29,6 +31,21 @@ use std::{
 use wisp_format::{Parameter, ParameterValue};
 use wisp_host::{Assignment, Config, MonitorInfo};
 use wisp_runtime::{Globals, Wallpaper};
+
+fn button<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Button<'a, Message> {
+    iced_button(content).padding([9, 12]).style(style::quiet)
+}
+
+fn scrollable<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced_scrollable(content).direction(iced_scrollable::Direction::Vertical(
+        iced_scrollable::Scrollbar::new()
+            .width(3)
+            .scroller_width(3)
+            .spacing(10),
+    ))
+}
 
 pub struct LaunchOptions {
     pub data_dir: Option<PathBuf>,
@@ -93,13 +110,11 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         App::view,
     )
     .title("Wisp")
-    .theme(|app: &App| {
-        if app.settings.dark_theme {
-            Theme::TokyoNight
-        } else {
-            Theme::Light
-        }
+    .settings(iced::Settings {
+        default_text_size: 14.into(),
+        ..Default::default()
     })
+    .theme(|app: &App| style::theme(app.settings.dark_theme))
     .subscription(App::subscription)
     .window(iced::window::Settings {
         size: iced::Size::new(1180.0, 820.0),
@@ -122,6 +137,12 @@ enum Page {
     Import,
     Settings,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryPanel {
+    Controls,
+    Display,
+    Details,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MonitorChoice {
     id: Option<String>,
@@ -138,6 +159,9 @@ enum Message {
     Designer(DesignerMessage),
     Graph(graph_ui::GraphMessage),
     Page(Page),
+    Focus,
+    Dismiss,
+    LibraryPanel(LibraryPanel),
     Search(String),
     Select(String),
     Scanned(Outcome<(Vec<Item>, Vec<String>)>),
@@ -205,6 +229,8 @@ struct App {
     items: Vec<Item>,
     thumbnails: BTreeMap<String, image::Handle>,
     page: Page,
+    focus_mode: bool,
+    library_panel: Option<LibraryPanel>,
     search: String,
     selected: Option<String>,
     preview: Option<Preview>,
@@ -286,6 +312,8 @@ impl App {
             items: vec![],
             thumbnails: BTreeMap::new(),
             page: Page::Library,
+            focus_mode: false,
+            library_panel: None,
             search: String::new(),
             selected: None,
             preview: None,
@@ -368,7 +396,24 @@ impl App {
             Message::Designer(message) => return self.designer_update(message),
             Message::Page(page) => {
                 self.page = page;
+                self.focus_mode = false;
                 self.last_tick = Instant::now();
+            }
+            Message::Focus => self.focus_mode = !self.focus_mode,
+            Message::LibraryPanel(panel) => {
+                self.library_panel = (self.library_panel != Some(panel)).then_some(panel);
+            }
+            Message::Dismiss => {
+                if self.focus_mode {
+                    self.focus_mode = false;
+                } else if self.page == Page::Designer && self.designer.paint_expanded {
+                    self.designer.paint_expanded = false;
+                } else if self.page == Page::Graph && self.graph.wire.is_some() {
+                    self.graph.wire = None;
+                } else {
+                    self.designer.panel = None;
+                    self.graph.panel = None;
+                }
             }
             Message::Search(value) => self.search = value,
             Message::Scanned(result) => {
@@ -787,6 +832,17 @@ impl App {
                     Err(error) => self.status = error,
                 }
             }
+            Message::Event(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key,
+                ..
+            })) if matches!(self.page, Page::Designer | Page::Graph) => {
+                use iced::keyboard::{Key, key::Named};
+                match key {
+                    Key::Named(Named::F11) => return self.update(Message::Focus),
+                    Key::Named(Named::Escape) => return self.update(Message::Dismiss),
+                    _ => {}
+                }
+            }
             Message::Event(iced::Event::Window(iced::window::Event::Focused)) => {
                 self.focused = true;
                 self.last_tick = Instant::now();
@@ -851,18 +907,28 @@ impl App {
         Subscription::batch(subscriptions)
     }
     fn view(&self) -> Element<'_, Message> {
+        let nav = |label, page| {
+            button(text(label).size(13))
+                .style(if self.page == page {
+                    style::selected
+                } else {
+                    style::quiet
+                })
+                .on_press(Message::Page(page))
+        };
         let navigation = row![
-            text("Wisp").size(32),
-            space().width(24),
-            button("Library").on_press(Message::Page(Page::Library)),
-            button("Create").on_press(Message::Page(Page::Designer)),
-            button("Graph").on_press(Message::Page(Page::Graph)),
-            button("Import").on_press(Message::Page(Page::Import)),
+            text("wisp").size(22),
+            space().width(20),
+            nav("Library", Page::Library),
+            nav("Create", Page::Designer),
+            nav("Graph", Page::Graph),
             space().width(Fill),
-            button("Settings").on_press(Message::Page(Page::Settings))
+            nav("Import", Page::Import),
+            nav("Settings", Page::Settings)
         ]
-        .spacing(12)
-        .align_y(iced::Center);
+        .spacing(4)
+        .align_y(iced::Center)
+        .padding([8, 16]);
         let content = match self.page {
             Page::Library => self.library_view(),
             Page::Designer => self.designer_view(),
@@ -870,147 +936,38 @@ impl App {
             Page::Import => self.import_view(),
             Page::Settings => self.settings_view(),
         };
-        container(
-            column![
-                navigation,
-                content,
+        let editing = matches!(self.page, Page::Designer | Page::Graph);
+        let mut layout = column![].spacing(0);
+        if !self.focus_mode || !editing {
+            layout = layout.push(navigation);
+        }
+        layout = layout.push(
+            container(content)
+                .padding(if editing { 8 } else { 24 })
+                .height(Fill),
+        );
+        // Keep operational feedback available without turning it into another panel.
+        if !self.focus_mode || !editing {
+            layout = layout.push(
                 container(
                     text(if self.busy {
                         "Working…"
                     } else {
                         &self.status
                     })
-                    .size(13)
+                    .size(11)
+                    .style(|theme| text::Style {
+                        color: Some(style::muted(theme)),
+                    }),
                 )
-                .padding(12)
-                .style(container::rounded_box)
-            ]
-            .spacing(20),
-        )
-        .padding(24)
-        .width(Fill)
-        .height(Fill)
-        .into()
+                .padding([8, 20]),
+            );
+        }
+        container(layout).width(Fill).height(Fill).into()
     }
-    fn library_view(&self) -> Element<'_, Message> {
-        let query = self.search.to_lowercase();
-        let mut cards = column![
-            text_input("Search wallpapers or tags", &self.search).on_input(Message::Search)
-        ]
-        .spacing(12);
-        for item in self.items.iter().filter(|i| {
-            format!(
-                "{} {} {}",
-                i.manifest.name,
-                i.manifest.author,
-                i.manifest.tags.join(" ")
-            )
-            .to_lowercase()
-            .contains(&query)
-        }) {
-            let mut card = column![].spacing(6);
-            if let Some(handle) = self.thumbnails.get(&item.record.key) {
-                card = card.push(
-                    image(handle.clone())
-                        .width(Fill)
-                        .height(110)
-                        .content_fit(iced::ContentFit::Cover),
-                );
-            }
-            card = card
-                .push(text(&item.manifest.name).size(19))
-                .push(text(format!("by {}", item.manifest.author)).size(13));
-            let selected = self.selected.as_ref() == Some(&item.record.key);
-            cards = cards.push(
-                button(card)
-                    .width(Fill)
-                    .padding(12)
-                    .style(if selected {
-                        button::primary
-                    } else {
-                        button::secondary
-                    })
-                    .on_press_maybe((!self.busy).then(|| Message::Select(item.record.key.clone()))),
-            );
-        }
-        if self.items.is_empty() {
-            cards = cards
-                .push(text("Your library is ready for its first wallpaper.").size(20))
-                .push(button("Import wallpaper").on_press(Message::Page(Page::Import)));
-        }
-        let sidebar = scrollable(cards).width(FillPortion(2));
-        let mut detail = column![].spacing(12);
+    fn wallpaper_controls(&self) -> Element<'_, Message> {
+        let mut detail = column![].spacing(14);
         if let (Some(item), Some(preview)) = (self.item(), &self.preview) {
-            detail = detail.push(
-                row![
-                    text(&item.manifest.name).size(28),
-                    space().width(Fill),
-                    button(if self.preview_paused {
-                        "Play preview"
-                    } else {
-                        "Pause preview"
-                    })
-                    .on_press(Message::PausePreview)
-                ]
-                .spacing(10),
-            );
-            detail = detail.push(
-                iced::widget::Shader::new(preview.clone())
-                    .width(Fill)
-                    .height(280),
-            );
-            detail = detail.push(text(&item.manifest.description));
-            detail = detail.push(
-                text(format!(
-                    "{} · {} passes · {:.1} MiB resources · Revision {}",
-                    item.record.source,
-                    item.passes,
-                    item.resource_bytes as f64 / 1048576.0,
-                    &item.record.key[..8]
-                ))
-                .size(13),
-            );
-            if !item.manifest.tags.is_empty() {
-                detail = detail.push(text(item.manifest.tags.join("  ·  ")).size(13));
-            }
-            detail = detail.push(text("Display on").size(18));
-            detail = detail.push(
-                row![
-                    pick_list(
-                        self.monitors.as_slice(),
-                        Some(&self.monitor),
-                        Message::Monitor
-                    )
-                    .width(Fill),
-                    button("Refresh")
-                        .on_press_maybe((!self.discovering).then_some(Message::RefreshMonitors))
-                ]
-                .spacing(8),
-            );
-            detail = detail.push(
-                row![
-                    text("Frame limit"),
-                    pick_list(
-                        &[15, 24, 30, 60, 90, 120, 144, 240][..],
-                        Some(self.assignment_fps),
-                        Message::DesktopFps
-                    ),
-                    text("FPS"),
-                    button("Apply wallpaper").on_press_maybe(
-                        (!self.busy
-                            && self.parameter_errors.is_empty()
-                            && preview.status.lock().unwrap().error.is_none())
-                        .then_some(Message::Apply)
-                    ),
-                    button("Clear").on_press_maybe((!self.busy).then_some(Message::Clear))
-                ]
-                .spacing(10)
-                .align_y(iced::Center),
-            );
-            detail = detail.push(text(self.assignment_label()).size(13));
-            if let Some(error) = &self.monitor_error {
-                detail = detail.push(text(error).size(13));
-            }
             if !item.parameters.is_empty() {
                 detail = detail.push(
                     row![
@@ -1032,7 +989,7 @@ impl App {
                         );
                     } else if let ParameterValue::Color(color) = value {
                         detail = detail.push(text(label));
-                        let mut components = row![].spacing(12);
+                        let mut components = column![].spacing(10);
                         for (index, label) in
                             ["Red", "Green", "Blue", "Alpha"].into_iter().enumerate()
                         {
@@ -1062,10 +1019,9 @@ impl App {
                             let id = id.clone();
                             move |v| Message::Parameter(id.clone(), v)
                         })
-                        .width(180);
-                        let mut control = row![text(label).width(Fill), input]
-                            .spacing(10)
-                            .align_y(iced::Center);
+                        .width(90);
+                        let mut control =
+                            column![text(label).size(12), input.width(Fill)].spacing(10);
                         if let (ParameterValue::Float(value), Some(min), Some(max)) =
                             (value, parameter.min, parameter.max)
                             && min < max
@@ -1077,7 +1033,7 @@ impl App {
                                     Message::Float(id.clone(), v)
                                 })
                                 .step(((max - min) / 200.0) as f32)
-                                .width(150),
+                                .width(Fill),
                             );
                         }
                         detail = detail.push(control);
@@ -1091,15 +1047,210 @@ impl App {
                     }
                 }
             }
-            detail = detail.push(
-                button("Export .wisp").on_press_maybe((!self.busy).then_some(Message::Export)),
+            if item.parameters.is_empty() {
+                detail = detail.push(text("This wallpaper has no adjustable controls.").size(13));
+            }
+        }
+        detail.into()
+    }
+    fn library_view(&self) -> Element<'_, Message> {
+        if self.items.is_empty() {
+            return container(
+                column![
+                    text("Your own little atmosphere.").size(32),
+                    text("Create a living wallpaper or bring one into your library.").size(15),
+                    space().height(12),
+                    row![
+                        button("Create wallpaper")
+                            .style(iced_button::primary)
+                            .on_press(Message::Page(Page::Designer)),
+                        button("Import…").on_press(Message::Page(Page::Import)),
+                    ]
+                    .spacing(12),
+                ]
+                .spacing(14)
+                .align_x(iced::Center),
+            )
+            .center(Fill)
+            .into();
+        }
+        let query = self.search.to_lowercase();
+        let filtered: Vec<_> = self
+            .items
+            .iter()
+            .filter(|i| {
+                format!(
+                    "{} {} {}",
+                    i.manifest.name,
+                    i.manifest.author,
+                    i.manifest.tags.join(" ")
+                )
+                .to_lowercase()
+                .contains(&query)
+            })
+            .collect();
+        let mut cards = column![].spacing(12);
+        if filtered.is_empty() {
+            cards = cards.push(text("No matching wallpapers.").size(13));
+        }
+        for item in filtered {
+            let mut card = column![].spacing(6);
+            if let Some(handle) = self.thumbnails.get(&item.record.key) {
+                card = card.push(
+                    image(handle.clone())
+                        .width(Fill)
+                        .height(124)
+                        .content_fit(iced::ContentFit::Cover),
+                );
+            }
+            card = card.push(text(&item.manifest.name).size(15)).push(
+                text(&item.manifest.author).size(11).style(|t| text::Style {
+                    color: Some(style::muted(t)),
+                }),
             );
-        } else {
-            detail = detail.push(
-                container(text("Choose a wallpaper to see it come alive.").size(24)).center(Fill),
+            cards = cards.push(
+                button(card)
+                    .width(Fill)
+                    .padding(10)
+                    .style(if self.selected.as_ref() == Some(&item.record.key) {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press_maybe((!self.busy).then(|| Message::Select(item.record.key.clone()))),
             );
         }
-        row![sidebar, scrollable(detail).width(FillPortion(5))]
+        let sidebar = column![
+            text_input("Find a wallpaper…", &self.search)
+                .on_input(Message::Search)
+                .size(13),
+            scrollable(cards).height(Fill),
+        ]
+        .spacing(14)
+        .width(220);
+        let mut detail = column![].spacing(10).height(Fill);
+        if let (Some(item), Some(preview)) = (self.item(), &self.preview) {
+            let tool = |label, panel| {
+                button(text(label).size(12))
+                    .style(if self.library_panel == Some(panel) {
+                        style::selected
+                    } else {
+                        style::quiet
+                    })
+                    .on_press(Message::LibraryPanel(panel))
+            };
+            detail = detail.push(
+                row![
+                    text(&item.manifest.name).size(18).width(Fill),
+                    tool("Adjust", LibraryPanel::Controls),
+                    tool("Display", LibraryPanel::Display),
+                    tool("Info", LibraryPanel::Details),
+                    button(if self.preview_paused { "Play" } else { "Pause" })
+                        .on_press(Message::PausePreview),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            );
+            let stage = container(crate::preview::fitted(preview.clone(), (16, 9)))
+                .padding(16)
+                .width(Fill)
+                .height(Fill)
+                .style(style::stage);
+            let mut workspace = row![stage].spacing(8).height(Fill);
+            if let Some(panel) = self.library_panel {
+                let title = match panel {
+                    LibraryPanel::Controls => "Adjust",
+                    LibraryPanel::Display => "Display",
+                    LibraryPanel::Details => "About this wallpaper",
+                };
+                let content: Element<'_, Message> = match panel {
+                    LibraryPanel::Controls => self.wallpaper_controls(),
+                    LibraryPanel::Display => {
+                        let mut content = column![
+                            text("Display on").size(12),
+                            pick_list(
+                                self.monitors.as_slice(),
+                                Some(&self.monitor),
+                                Message::Monitor
+                            )
+                            .width(Fill),
+                            button("Refresh displays").on_press_maybe(
+                                (!self.discovering).then_some(Message::RefreshMonitors)
+                            ),
+                            text("Frame limit").size(12),
+                            pick_list(
+                                &[15, 24, 30, 60, 90, 120, 144, 240][..],
+                                Some(self.assignment_fps),
+                                Message::DesktopFps
+                            ),
+                            text("Frames per second").size(11),
+                            text(self.assignment_label()).size(12),
+                            button("Clear assignment")
+                                .on_press_maybe((!self.busy).then_some(Message::Clear)),
+                        ]
+                        .spacing(14);
+                        if let Some(error) = &self.monitor_error {
+                            content = content.push(text(error).size(12));
+                        }
+                        content.into()
+                    }
+                    LibraryPanel::Details => column![
+                        text(&item.manifest.description).size(14),
+                        text(format!("By {}", item.manifest.author)).size(12),
+                        text(item.manifest.tags.join(" · ")).size(11),
+                        text(format!(
+                            "{} · {} passes · {:.1} MiB",
+                            item.record.source,
+                            item.passes,
+                            item.resource_bytes as f64 / 1048576.
+                        ))
+                        .size(11),
+                        button("Export wallpaper…")
+                            .on_press_maybe((!self.busy).then_some(Message::Export)),
+                    ]
+                    .spacing(14)
+                    .into(),
+                };
+                workspace = workspace.push(
+                    container(
+                        column![
+                            row![
+                                text(title).size(16),
+                                space().width(Fill),
+                                button("×").on_press(Message::LibraryPanel(panel))
+                            ]
+                            .align_y(iced::Center),
+                            scrollable(content).height(Fill),
+                        ]
+                        .spacing(14),
+                    )
+                    .padding(14)
+                    .width(280)
+                    .height(Fill)
+                    .style(style::panel),
+                );
+            }
+            detail = detail.push(workspace).push(
+                row![
+                    text(format!("For {}", self.monitor.label))
+                        .size(12)
+                        .width(Fill),
+                    button("Apply wallpaper")
+                        .style(iced_button::primary)
+                        .on_press_maybe(
+                            (!self.busy
+                                && self.parameter_errors.is_empty()
+                                && preview.status.lock().unwrap().error.is_none())
+                            .then_some(Message::Apply)
+                        ),
+                ]
+                .align_y(iced::Center)
+                .spacing(12),
+            );
+        } else {
+            detail = detail.push(container(text("Choose a wallpaper.").size(24)).center(Fill));
+        }
+        row![sidebar, detail.width(Fill)]
             .spacing(24)
             .height(Fill)
             .into()
@@ -1247,6 +1398,50 @@ fn is_image(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn escape_restores_focused_painting_before_closing_the_editor() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.page = Page::Designer;
+        app.designer.panel = Some(designer_ui::DesignerPanel::Layers);
+        app.designer.paint_expanded = true;
+        app.designer.paint_pending = true;
+        app.designer.dirty = true;
+        let _ = app.update(Message::Focus);
+        assert!(app.focus_mode);
+        let _ = app.update(Message::Dismiss);
+        assert!(!app.focus_mode);
+        assert!(app.designer.paint_expanded);
+        assert!(app.designer.panel == Some(designer_ui::DesignerPanel::Layers));
+        let _ = app.update(Message::Dismiss);
+        assert!(!app.designer.paint_expanded);
+        assert!(app.designer.panel.is_some());
+        let _ = app.update(Message::Dismiss);
+        assert!(app.designer.panel.is_none());
+        assert!(app.designer.dirty && app.designer.paint_pending);
+    }
+
+    #[test]
+    fn panels_toggle_during_compilation_without_changing_the_graph() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let (mut app, _) = App::new(library, Settings::default(), None, None);
+        app.page = Page::Graph;
+        app.graph.dirty = true;
+        app.graph.wire = Some("source".into());
+        let panel = graph_ui::GraphPanel::Nodes;
+        let _ = app.update(Message::Graph(graph_ui::GraphMessage::Panel(panel)));
+        assert!(app.graph.panel == Some(panel));
+        let _ = app.update(Message::Dismiss);
+        assert!(app.graph.wire.is_none());
+        assert!(app.graph.panel == Some(panel));
+        let _ = app.update(Message::Graph(graph_ui::GraphMessage::Panel(panel)));
+        assert!(app.graph.panel.is_none());
+        assert!(app.graph.dirty && app.busy);
+        assert_eq!(app.graph.revision, 0);
+    }
+
     #[test]
     fn invalid_edits_preserve_preview_values_and_reset_uses_package_defaults() {
         let temporary = tempfile::tempdir().unwrap();

@@ -122,12 +122,20 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
         &self,
         _: &State,
         renderer: &iced::Renderer,
-        _: &iced::Theme,
+        theme: &iced::Theme,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
-        f.fill_rectangle(Point::ORIGIN, bounds.size(), Color::from_rgb8(20, 24, 37));
+        f.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            if theme.extended_palette().is_dark {
+                Color::from_rgb8(18, 19, 21)
+            } else {
+                Color::from_rgb8(224, 223, 220)
+            },
+        );
         let Some(doc) = &self.0.document else {
             return vec![f.into_geometry()];
         };
@@ -136,7 +144,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
             for y in (0..bounds.height as usize).step_by(24) {
                 f.fill(
                     &Path::circle(Point::new(x as f32, y as f32), 0.7),
-                    Color::from_rgb8(47, 54, 74),
+                    theme.extended_palette().background.strong.color,
                 );
             }
         }
@@ -184,7 +192,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
             let p = self.screen(doc.layout.positions.get(&n.id).copied().unwrap_or_default());
             let size = Size::new(WIDTH * zoom, height(ports(&n.op).len()) * zoom);
             let rect = Path::rectangle(p, size);
-            f.fill(&rect, Color::from_rgb8(38, 44, 64));
+            f.fill(&rect, theme.palette().background);
             f.stroke(
                 &rect,
                 Stroke::default()
@@ -194,9 +202,9 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                         1.
                     })
                     .with_color(if self.0.selected.as_ref() == Some(&n.id) {
-                        Color::from_rgb8(165, 147, 245)
+                        theme.palette().primary
                     } else {
-                        Color::from_rgb8(74, 83, 110)
+                        theme.extended_palette().background.strong.color
                     }),
             );
             let title = if doc.graph.output == n.id {
@@ -208,7 +216,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                 content: title,
                 position: Point::new(p.x + 10. * zoom, p.y + 5. * zoom),
                 size: (14. * zoom).into(),
-                color: Color::WHITE,
+                color: theme.palette().text,
                 ..Default::default()
             });
             f.fill_text(Text {
@@ -221,7 +229,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                 ),
                 position: Point::new(p.x + 10. * zoom, p.y + 28. * zoom),
                 size: (10. * zoom).into(),
-                color: Color::from_rgb8(165, 177, 207),
+                color: super::style::muted(theme),
                 ..Default::default()
             });
             if !matches!(n.op, wisp_ir::Op::Output { .. }) {
@@ -245,7 +253,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                     ),
                     position: Point::new(pos.x + 10. * zoom, pos.y - 8. * zoom),
                     size: (11. * zoom).into(),
-                    color: Color::WHITE,
+                    color: theme.palette().text,
                     ..Default::default()
                 });
             }

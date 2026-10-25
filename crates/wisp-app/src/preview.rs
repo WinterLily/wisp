@@ -23,6 +23,26 @@ pub struct Preview {
     pub globals: Globals,
     pub status: Arc<Mutex<Status>>,
 }
+
+/// Fit the authoring canvas to its source without stretching it as panels open.
+pub(crate) fn fitted<'a, Message: 'a>(
+    preview: Preview,
+    dimensions: (u32, u32),
+) -> iced::Element<'a, Message> {
+    iced::widget::responsive(move |size| {
+        let aspect = dimensions.0.max(1) as f32 / dimensions.1.max(1) as f32;
+        let width = size.width.min(size.height * aspect).max(1.);
+        let height = width / aspect;
+        iced::widget::container(
+            iced::widget::Shader::new(preview.clone())
+                .width(width)
+                .height(height),
+        )
+        .center(iced::Length::Fill)
+        .into()
+    })
+    .into()
+}
 pub struct Primitive {
     preview: Preview,
     mouse: [f32; 2],
