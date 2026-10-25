@@ -431,6 +431,18 @@ impl App {
                     }
                 }
                 Command::Finish {} => {
+                    if let Some(frames) = self.frame_limit {
+                        if !self.smoke_ready(frames) {
+                            self.audit_commands.push_front(Command::Finish {});
+                            return Task::none();
+                        }
+                        println!("Rendered {frames} live preview frames");
+                        self.frame_limit = None;
+                    }
+                    if self.screenshot.is_some() {
+                        self.audit_commands.push_front(Command::Finish {});
+                        return self.capture(false);
+                    }
                     println!("AUDIT_COMPLETE {}", self.state());
                     return iced::exit();
                 }
@@ -625,6 +637,16 @@ mod tests {
                 .unwrap()
                 .contains("smoke test timed out")
         );
+    }
+    #[test]
+    fn finishing_an_audit_does_not_bypass_requested_frame_smoke_checks() {
+        let (_dir, mut app) = app();
+        app.frame_limit = Some(2);
+        app.audit_commands.push_back(Command::Finish {});
+        let _ = app.audit_poll();
+        assert_eq!(app.audit_commands.len(), 1);
+        assert_eq!(app.frame_limit, Some(2));
+        assert!(app.exit_failure.lock().unwrap().is_none());
     }
     #[test]
     fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {
