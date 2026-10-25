@@ -36,6 +36,7 @@ pub struct Design {
     pub version: u32,
     pub name: String,
     pub author: String,
+    pub parallax: bool,
     pub pulse: bool,
     pub blur: bool,
     pub vignette: bool,
@@ -47,6 +48,7 @@ impl Default for Design {
             version: 1,
             name: "My wallpaper".into(),
             author: "Me".into(),
+            parallax: true,
             pulse: true,
             blur: false,
             vignette: true,
@@ -62,6 +64,13 @@ pub struct Control {
     pub default: f32,
 }
 pub const CONTROLS: &[Control] = &[
+    Control {
+        id: "parallax",
+        label: "Mouse movement",
+        min: 0.,
+        max: 0.15,
+        default: 0.03,
+    },
     Control {
         id: "speed",
         label: "Animation speed",
@@ -112,6 +121,7 @@ impl Design {
         *self = Self::default();
         self.name = name;
         self.author = author;
+        self.parallax = matches!(preset, Preset::Gentle | Preset::Dreamy);
         self.pulse = matches!(preset, Preset::Gentle | Preset::Pulse);
         self.blur = preset == Preset::Dreamy;
         self.vignette = preset != Preset::Still;
@@ -190,10 +200,6 @@ impl Draft {
         })
     }
     pub fn graph(&self) -> Result<Graph> {
-        self.generated_graph(None)
-    }
-    // Reconstruct old graphs only to verify that migration will not discard external edits.
-    fn generated_graph(&self, legacy_parallax: Option<(bool, f32)>) -> Result<Graph> {
         self.design.validate()?;
         let d = &self.design;
         let mut nodes = vec![];
@@ -202,14 +208,6 @@ impl Draft {
             id.to_owned()
         };
         let uv = add("uv", Op::Uv {});
-        if legacy_parallax.is_some() {
-            add(
-                "parallax",
-                Op::Parameter {
-                    parameter: "parallax".into(),
-                },
-            );
-        }
         for c in CONTROLS {
             add(
                 c.id,
@@ -218,7 +216,7 @@ impl Draft {
                 },
             );
         }
-        let sample_uv = if legacy_parallax.is_some_and(|(enabled, _)| enabled) {
+        let sample_uv = if d.parallax {
             add(
                 "moving_uv",
                 Op::Parallax {
@@ -307,31 +305,19 @@ impl Draft {
         }
         let output = add("output", Op::Output { color });
         nodes.extend(layer_nodes);
-        let mut parameters: Vec<_> = CONTROLS
-            .iter()
-            .map(|c| Parameter {
-                id: c.id.into(),
-                default: ParameterValue::Float(d.values[c.id]),
-                min: Some(c.min as f64),
-                max: Some(c.max as f64),
-            })
-            .collect();
-        if let Some((_, strength)) = legacy_parallax {
-            parameters.insert(
-                0,
-                Parameter {
-                    id: "parallax".into(),
-                    default: ParameterValue::Float(strength),
-                    min: Some(0.),
-                    max: Some(0.15_f32 as f64),
-                },
-            );
-        }
         Ok(Graph {
             version: 1,
             nodes,
             output,
-            parameters,
+            parameters: CONTROLS
+                .iter()
+                .map(|c| Parameter {
+                    id: c.id.into(),
+                    default: ParameterValue::Float(d.values[c.id]),
+                    min: Some(c.min as f64),
+                    max: Some(c.max as f64),
+                })
+                .collect(),
         })
     }
     pub fn enable_layers(&mut self) -> &mut crate::layers::Stack {
@@ -462,28 +448,7 @@ impl Draft {
             ensure!(path.starts_with(&root), "project file escapes folder");
             Ok(path)
         };
-        let mut settings: serde_json::Value =
-            serde_json::from_slice(&read(&contained("designer.json")?, 65536)?)?;
-        let legacy_parallax = settings
-            .as_object_mut()
-            .context("invalid designer settings")?
-            .remove("parallax")
-            .map(|enabled| -> Result<(bool, f32)> {
-                let enabled: bool = serde_json::from_value(enabled)?;
-                let strength = settings
-                    .get_mut("values")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .and_then(|values| values.remove("parallax"))
-                    .context("missing legacy parallax control")?;
-                let strength: f32 = serde_json::from_value(strength)?;
-                ensure!(
-                    strength.is_finite() && (0.0..=0.15).contains(&strength),
-                    "invalid legacy parallax strength"
-                );
-                Ok((enabled, strength))
-            })
-            .transpose()?;
-        let design: Design = serde_json::from_value(settings)?;
+        let design: Design = serde_json::from_slice(&read(&contained("designer.json")?, 65536)?)?;
         let project: Project = serde_json::from_slice(&read(&contained("project.json")?, 65536)?)?;
         if root.join("layers.json").exists() {
             let document = crate::graph::Document::open(&root)?;
@@ -498,8 +463,7 @@ impl Draft {
             let mut draft = Self::from_bytes(background.bytes.clone(), design)?;
             draft.layers = Some(stack);
             ensure!(
-                serde_json::to_value(document.graph)?
-                    == serde_json::to_value(draft.generated_graph(legacy_parallax)?)?,
+                serde_json::to_value(document.graph)? == serde_json::to_value(draft.graph()?)?,
                 "graph was edited outside Easy Designer; open it in Graph instead"
             );
             ensure!(
@@ -529,8 +493,7 @@ impl Draft {
         // Refuse to silently discard externally edited authoring data.
         let graph: Graph = serde_json::from_slice(&read(&contained("graph.json")?, 1024 * 1024)?)?;
         ensure!(
-            serde_json::to_value(graph)?
-                == serde_json::to_value(draft.generated_graph(legacy_parallax)?)?,
+            serde_json::to_value(graph)? == serde_json::to_value(draft.graph()?)?,
             "graph was edited outside Easy Designer; import it as a graph project instead"
         );
         ensure!(

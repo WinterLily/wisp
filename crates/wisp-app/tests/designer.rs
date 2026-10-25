@@ -32,14 +32,9 @@ fn presets_compile_to_portable_graphs_with_only_relevant_controls() {
             parameters.iter().any(|p| p.id == "radius"),
             draft.design.blur
         );
-        assert!(!parameters.iter().any(|p| p.id == "parallax"));
-        assert!(
-            !draft
-                .graph()
-                .unwrap()
-                .nodes
-                .iter()
-                .any(|node| { matches!(node.op, wisp_ir::Op::Parallax { .. }) })
+        assert_eq!(
+            parameters.iter().any(|p| p.id == "parallax"),
+            draft.design.parallax
         );
         let bytes = compiled
             .package
@@ -151,120 +146,4 @@ fn rejects_bad_images_settings_and_escaping_project_assets() {
     draft.design.name.clear();
     assert!(draft.compile().is_err());
     assert!(!temp.path().join("invalid-project").exists());
-}
-
-#[test]
-fn legacy_projects_remove_parallax_without_discarding_external_graph_edits() {
-    use serde_json::json;
-    use wisp_format::Parameter;
-    use wisp_ir::{Node, Op};
-
-    let temp = tempfile::tempdir().unwrap();
-    for layered in [false, true] {
-        for enabled in [false, true] {
-            let mut draft = draft(temp.path());
-            if layered {
-                draft.enable_layers();
-            }
-            let destination = temp.path().join(format!("legacy-{layered}-{enabled}"));
-            draft.save_project(&destination).unwrap();
-            let mut settings = serde_json::to_value(&draft.design).unwrap();
-            settings["parallax"] = enabled.into();
-            settings["values"]["parallax"] = 0.12.into();
-            fs::write(
-                destination.join("designer.json"),
-                serde_json::to_vec(&settings).unwrap(),
-            )
-            .unwrap();
-
-            let mut graph = draft.graph().unwrap();
-            let control_count = graph.parameters.len();
-            graph.parameters.insert(
-                0,
-                Parameter {
-                    id: "parallax".into(),
-                    default: ParameterValue::Float(0.12),
-                    min: Some(0.),
-                    max: Some(0.15_f32 as f64),
-                },
-            );
-            if enabled {
-                for node in &mut graph.nodes {
-                    match &mut node.op {
-                        Op::Image { uv, .. } | Op::Transform { uv, .. } if uv == "uv" => {
-                            *uv = "moving_uv".into();
-                        }
-                        _ => {}
-                    }
-                }
-                graph.nodes.insert(
-                    1 + control_count,
-                    Node {
-                        id: "moving_uv".into(),
-                        op: Op::Parallax {
-                            uv: "uv".into(),
-                            strength: "parallax".into(),
-                        },
-                    },
-                );
-            }
-            graph.nodes.insert(
-                1,
-                Node {
-                    id: "parallax".into(),
-                    op: Op::Parameter {
-                        parameter: "parallax".into(),
-                    },
-                },
-            );
-            fs::write(
-                destination.join("graph.json"),
-                serde_json::to_vec(&graph).unwrap(),
-            )
-            .unwrap();
-
-            let reopened = Draft::open_project(&destination).unwrap();
-            assert_eq!(
-                serde_json::to_value(reopened.graph().unwrap()).unwrap(),
-                serde_json::to_value(draft.graph().unwrap()).unwrap()
-            );
-            assert!(!reopened.design.values.contains_key("parallax"));
-            let migrated = temp.path().join(format!("migrated-{layered}-{enabled}"));
-            reopened.save_project(&migrated).unwrap();
-            let saved: serde_json::Value =
-                serde_json::from_slice(&fs::read(migrated.join("designer.json")).unwrap()).unwrap();
-            assert!(saved.get("parallax").is_none());
-            Draft::open_project(&migrated).unwrap();
-
-            for strength in [json!(-0.1), json!(0.2), json!("invalid"), json!(null)] {
-                settings["values"]["parallax"] = strength;
-                fs::write(
-                    destination.join("designer.json"),
-                    serde_json::to_vec(&settings).unwrap(),
-                )
-                .unwrap();
-                assert!(Draft::open_project(&destination).is_err());
-            }
-            settings["values"]["parallax"] = 0.12.into();
-            fs::write(
-                destination.join("designer.json"),
-                serde_json::to_vec(&settings).unwrap(),
-            )
-            .unwrap();
-            graph
-                .nodes
-                .iter_mut()
-                .find(|node| node.id == "output")
-                .unwrap()
-                .op = Op::Output {
-                color: "image".into(),
-            };
-            fs::write(
-                destination.join("graph.json"),
-                serde_json::to_vec(&graph).unwrap(),
-            )
-            .unwrap();
-            assert!(Draft::open_project(&destination).is_err());
-        }
-    }
 }

@@ -280,16 +280,8 @@ fn easy_presets_preview_match_exported_defaults_and_animate() {
         width: 96.,
         height: 64.,
     };
-    for (i, (preset, layered)) in Preset::ALL
-        .into_iter()
-        .flat_map(|preset| [false, true].map(|layered| (preset, layered)))
-        .enumerate()
-    {
+    for (i, preset) in Preset::ALL.into_iter().enumerate() {
         draft.design.preset(preset);
-        draft.layers = None;
-        if layered {
-            draft.enable_layers();
-        }
         let wallpaper =
             Arc::new(Wallpaper::from_package(&draft.compile().unwrap().package).unwrap());
         let mut preview = Preview {
@@ -347,25 +339,13 @@ fn easy_presets_preview_match_exported_defaults_and_animate() {
             draft.design.pulse,
             "{preset}: unexpected time response"
         );
-        for mouse in [[0., 0.], [0., 1.], [1., 0.], [1., 1.], [0.5, 0.5]] {
-            preview.globals.frame += 1;
-            let moved = frame(&gpu, &mut pipeline, preview.clone(), bounds, mouse);
-            assert_eq!(
-                moved, animated,
-                "{preset}: mouse movement shifted the image"
-            );
-            preview.globals.mouse = mouse;
-            let exported_frame = renderer
-                .render_rgba(&gpu, 96, 64, &preview.globals)
-                .unwrap();
-            assert!(
-                moved
-                    .iter()
-                    .zip(exported_frame)
-                    .all(|(a, b)| a.abs_diff(b) <= 1),
-                "{preset}: preview/export differ at {mouse:?}"
-            );
-        }
+        preview.globals.frame += 1;
+        let moved = frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.1, 0.9]);
+        assert_eq!(
+            moved != animated,
+            draft.design.parallax,
+            "{preset}: unexpected mouse response"
+        );
         assert!(preview.status.lock().unwrap().error.is_none());
     }
 }

@@ -297,6 +297,7 @@ impl Command {
             DesignerAuthor { value } => designer(DesignerMessage::Author(value)),
             DesignerEffect { effect, enabled } => designer(DesignerMessage::Toggle(
                 match effect.as_str() {
+                    "parallax" => DesignEffect::Parallax,
                     "pulse" => DesignEffect::Pulse,
                     "blur" => DesignEffect::Blur,
                     "vignette" => DesignEffect::Vignette,
