@@ -96,6 +96,11 @@ fn owner_pid_path(library: &Library) -> PathBuf {
 }
 
 pub fn status(library: &Library) -> Result<Option<wisp_host::status::DaemonStatus>> {
+    let Some(_publication) =
+        wisp_host::status::StartupPublicationGate::try_observe(&library.root.join("daemon.lock"))?
+    else {
+        return Ok(None);
+    };
     if !running(library)? {
         return Ok(None);
     }
@@ -403,6 +408,46 @@ mod tests {
         assert!(!ready(&library).unwrap());
 
         snapshot.pid = owner_pid;
+        snapshot.write(&path).unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn publication_gate_hides_previous_owner_until_new_pid_and_status_are_published() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let lock_path = library.root.join("daemon.lock");
+        let lock = lock_file(&lock_path).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        publish_owner_pid(&library, &lock, snapshot.pid);
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        lock.set_modified(published).unwrap();
+
+        let publication = wisp_host::status::StartupPublicationGate::acquire(&lock_path).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        // Model a restart paused before PID publication, with all stale observations matching.
+        assert_eq!(lock.metadata().unwrap().modified().unwrap(), published);
+        assert_eq!(
+            wisp_io::read_bounded(&owner_pid_path(&library), 11).unwrap(),
+            format!("{}\n", snapshot.pid).as_bytes()
+        );
+        assert!(running(&library).unwrap());
+        assert!(DaemonStatus::read(&path).unwrap().ready);
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+
+        let next_owner_pid = snapshot.pid.wrapping_add(1).max(1);
+        publish_owner_pid(&library, &lock, next_owner_pid);
+        assert!(status(&library).unwrap().is_none());
+        drop(publication);
+        // Equal timestamps leave PID matching as the barrier after publication completes.
+        lock.set_modified(published).unwrap();
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+        snapshot.pid = next_owner_pid;
         snapshot.write(&path).unwrap();
         assert!(ready(&library).unwrap());
     }

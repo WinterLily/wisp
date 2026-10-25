@@ -1,12 +1,72 @@
 //! Versioned observations distinguish process ownership from initialized desktop presentation.
 use crate::{Assignment, Config};
 use anyhow::{Context, Result, ensure};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
+    fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+/// Serializes ownership publication with observations of the daemon lock and status.
+pub struct StartupPublicationGate {
+    file: File,
+}
+
+impl StartupPublicationGate {
+    /// Acquire before the daemon lock, and release after publishing its complete owner PID.
+    pub fn acquire(lock_path: &Path) -> Result<Self> {
+        let file = Self::open(lock_path)?;
+        // Both writers and readers take the gate first, so a reader can never wait for
+        // a daemon lock held by a writer that is itself waiting for that reader's gate.
+        FileExt::lock_exclusive(&file).context("could not acquire daemon publication gate")?;
+        Ok(Self { file })
+    }
+
+    /// Keep this guard through the entire lock, owner PID and status observation.
+    pub fn try_observe(lock_path: &Path) -> Result<Option<Self>> {
+        let file = Self::open(lock_path)?;
+        match FileExt::try_lock_shared(&file) {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn open(lock_path: &Path) -> Result<File> {
+        let mut gate_path = lock_path.as_os_str().to_os_string();
+        gate_path.push(".startup");
+        let gate_path = PathBuf::from(gate_path);
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        // Inspect the opened handle without waiting on a substituted FIFO or terminal.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+        }
+        let file = options
+            .open(&gate_path)
+            .with_context(|| format!("could not open {}", gate_path.display()))?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "expected a regular publication gate: {}",
+            gate_path.display()
+        );
+        Ok(file)
+    }
+}
+
+impl Drop for StartupPublicationGate {
+    fn drop(&mut self) {
+        // Closing alone can leave a forked child's copy holding the gate until exec.
+        let _ = FileExt::unlock(&self.file);
+    }
+}
 
 pub fn next_output_identity() -> u64 {
     static NEXT_OUTPUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -133,6 +193,129 @@ impl Drop for StatusReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_gate_excludes_observers_until_writer_drops() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("custom.lock");
+        let publication = StartupPublicationGate::acquire(&lock_path).unwrap();
+        assert!(
+            StartupPublicationGate::try_observe(&lock_path)
+                .unwrap()
+                .is_none()
+        );
+        // A concurrent fork can retain the descriptor until close-on-exec runs.
+        let inherited = publication.file.try_clone().unwrap();
+        drop(publication);
+        assert!(
+            StartupPublicationGate::try_observe(&lock_path)
+                .unwrap()
+                .is_some()
+        );
+        drop(inherited);
+        assert!(!lock_path.exists());
+        assert!(directory.path().join("custom.lock.startup").is_file());
+    }
+
+    #[test]
+    fn publication_gate_allows_shared_observations_and_excludes_writers_until_all_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("daemon.lock");
+        let first = StartupPublicationGate::try_observe(&lock_path)
+            .unwrap()
+            .unwrap();
+        let second = StartupPublicationGate::try_observe(&lock_path)
+            .unwrap()
+            .unwrap();
+        let writer = StartupPublicationGate::open(&lock_path).unwrap();
+        for observer in [first, second] {
+            let error = FileExt::try_lock_exclusive(&writer).unwrap_err();
+            assert_eq!(
+                error.raw_os_error(),
+                fs2::lock_contended_error().raw_os_error()
+            );
+            drop(observer);
+        }
+        FileExt::try_lock_exclusive(&writer).unwrap();
+        drop(writer);
+        assert!(
+            StartupPublicationGate::try_observe(&lock_path)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn publication_gate_rejects_nonregular_paths_and_open_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("daemon.lock");
+        std::fs::create_dir(directory.path().join("daemon.lock.startup")).unwrap();
+        assert!(StartupPublicationGate::acquire(&lock_path).is_err());
+        assert!(StartupPublicationGate::try_observe(&lock_path).is_err());
+        let missing_parent = directory.path().join("missing/daemon.lock");
+        assert!(StartupPublicationGate::acquire(&missing_parent).is_err());
+        assert!(StartupPublicationGate::try_observe(&missing_parent).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_gate_rejects_fifo_before_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "status::tests::publication_gate_fifo_child",
+                "--nocapture",
+            ])
+            .env("WISP_PUBLICATION_GATE_FIFO_DIRECTORY", directory.path())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "publication gate FIFO child failed");
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("publication gate FIFO open hung");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_gate_fifo_child() {
+        let Some(directory) = std::env::var_os("WISP_PUBLICATION_GATE_FIFO_DIRECTORY") else {
+            return;
+        };
+        let directory = Path::new(&directory);
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(directory.join("daemon.lock.startup"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let lock_path = directory.join("daemon.lock");
+        assert!(
+            StartupPublicationGate::acquire(&lock_path)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("regular publication gate")
+        );
+        assert!(
+            StartupPublicationGate::try_observe(&lock_path)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("regular publication gate")
+        );
+    }
+
     #[test]
     fn status_publication_replaces_complete_snapshots_and_cleans_temporary_files() {
         let directory = tempfile::tempdir().unwrap();

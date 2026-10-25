@@ -112,6 +112,7 @@ fn main() -> Result<()> {
     }
     let _instance_lock = if let Some(path) = args.lock_file {
         use fs2::FileExt;
+        let publication = wisp_host::status::StartupPublicationGate::acquire(&path)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -132,6 +133,7 @@ fn main() -> Result<()> {
             owner_path.push(".pid");
             std::fs::write(PathBuf::from(owner_path), owner.as_bytes())?;
         }
+        drop(publication);
         Some(file)
     } else {
         None
