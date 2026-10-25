@@ -39,6 +39,12 @@ struct Args {
     /// Hold an exclusive lock for a managed daemon instance
     #[arg(long)]
     lock_file: Option<PathBuf>,
+    /// Publish initialized readiness, accepted config generations and output state
+    #[arg(long, conflicts_with_all = ["check", "list_outputs", "list_audio_devices"])]
+    status_file: Option<PathBuf>,
+    /// Exit gracefully when this file appears (for an owning test/session harness)
+    #[arg(long, conflicts_with_all = ["check", "list_outputs", "list_audio_devices"])]
+    stop_file: Option<PathBuf>,
     /// Validate all configured wallpapers without a display server or GPU
     #[arg(long, conflicts_with = "frames")]
     check: bool,
@@ -118,12 +124,17 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    if let Some(path) = &args.status_file {
+        wisp_host::status::DaemonStatus::starting(&config).write(path)?;
+    }
     run(Options {
         config,
         config_path: args.config,
         list_outputs: args.list_outputs,
         json: args.json,
         frames: args.frames,
+        status_path: args.status_file,
+        stop_path: args.stop_file,
     })
 }
 

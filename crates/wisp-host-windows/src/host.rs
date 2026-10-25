@@ -13,11 +13,16 @@ use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
-use wisp_host::Assignment;
+use wisp_host::{
+    Assignment,
+    reconciliation::{self, DesktopAction},
+    status::{OutputStatus, StatusReporter},
+};
 use wisp_runtime::{Globals, Gpu, Renderer};
 
 // Field order releases each surface before its HWND, and all outputs before GPU/instance.
 struct Output {
+    instance_id: u64,
     renderer: Renderer,
     surface: wgpu::Surface<'static>,
     window: Window,
@@ -76,6 +81,7 @@ pub fn run(options: Options) -> Result<()> {
         return Ok(());
     }
     options.config.validate()?;
+    let mut reporter = StatusReporter::new(options.status_path.clone(), &options.config)?;
     let audio = wisp_audio::Service::new(options.config.audio.clone());
     let mut audio_config = options.config.audio.clone();
     let _class = native::WindowClass::register()?;
@@ -93,14 +99,20 @@ pub fn run(options: Options) -> Result<()> {
     let mut modified = config_modified(options.config_path.as_deref());
     let mut next_scan = Instant::now() + Duration::from_secs(1);
     let mut reported_shell_loss = false;
-    while !stop.load(Ordering::Relaxed) && native::pump_messages() {
+    while !stop.load(Ordering::Relaxed)
+        && !options.stop_path.as_ref().is_some_and(|path| path.exists())
+        && native::pump_messages()
+    {
         let now = Instant::now();
-        if host.desktop.is_some_and(|d| !d.valid())
-            || host
-                .outputs
-                .iter()
-                .any(|o| !o.window.valid(host.desktop.unwrap()))
-        {
+        let desktop_action = reconciliation::desktop_action(
+            host.desktop.map(|desktop| desktop.valid()),
+            host.desktop.is_some_and(|desktop| {
+                host.outputs
+                    .iter()
+                    .all(|output| output.window.valid(desktop))
+            }),
+        );
+        if desktop_action == DesktopAction::Release {
             // Stop using swapchains whose native parents disappeared. Discovery
             // below recreates our child windows after Explorer returns.
             host.outputs.clear();
@@ -113,6 +125,7 @@ pub fn run(options: Options) -> Result<()> {
                     Ok(desktop) => {
                         host.desktop = Some(desktop);
                         reported_shell_loss = false;
+                        modified = None;
                     }
                     Err(error) if !reported_shell_loss => {
                         eprintln!("Wisp: waiting for Explorer desktop: {error:#}");
@@ -127,14 +140,9 @@ pub fn run(options: Options) -> Result<()> {
                     modified = current;
                     let result = Config::load(path).and_then(|config| {
                         config.validate()?;
-                        if host.desktop.is_some() {
-                            host.reconcile(&native::monitors()?, Some(config))
-                        } else {
-                            // There are no running surfaces to replace while the shell is absent.
-                            host.config = config;
-                            Ok(())
-                        }
+                        host.reconcile(&native::monitors()?, Some(config))
                     });
+                    reporter.reloaded(&result, &host.config);
                     match result {
                         Ok(()) => eprintln!("Wisp: reloaded wallpaper assignments"),
                         Err(error) => eprintln!("Wisp: keeping previous assignments: {error:#}"),
@@ -169,9 +177,11 @@ pub fn run(options: Options) -> Result<()> {
                 output.draw(host.gpu.as_ref().unwrap(), cursor)?;
             }
         }
+        reporter.update(host.desktop.is_some(), host.output_status(), false)?;
         if options.frames.is_some_and(|count| {
             !host.outputs.is_empty() && host.outputs.iter().all(|o| o.presented >= count)
         }) {
+            reporter.update(host.desktop.is_some(), host.output_status(), true)?;
             eprintln!(
                 "Wisp: presented requested frames on {} output(s)",
                 host.outputs.len()
@@ -197,62 +207,62 @@ fn config_modified(path: Option<&Path>) -> Option<SystemTime> {
     path.and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
 }
 impl Host {
+    fn output_status(&self) -> Vec<OutputStatus> {
+        self.outputs
+            .iter()
+            .map(|output| OutputStatus {
+                instance_id: output.instance_id,
+                id: output.monitor.id.clone(),
+                assignment: output.assignment.clone(),
+                initialized: true,
+                presented: output.presented,
+            })
+            .collect()
+    }
     /// Prepare hidden windows and GPU resources for every changed/new output,
     /// then commit together. Failed reloads leave the old visible outputs intact.
     fn reconcile(&mut self, monitors: &[Monitor], replacement: Option<Config>) -> Result<()> {
-        if let Some(next) = &replacement
-            && self.config.audio_only_change(next)
-        {
-            self.config.audio = next.audio.clone();
-            return Ok(());
-        }
-        let config = replacement.as_ref().unwrap_or(&self.config);
         let desktop = self.desktop.context("Explorer desktop is unavailable")?;
-        let active: Vec<_> = monitors
-            .iter()
-            .filter_map(|m| m.assignment(config).map(|a| (m, a)))
-            .collect();
-        ensure!(
-            active.len() <= 16,
-            "at most 16 active outputs are supported"
-        );
-        let mut prepared = Vec::new();
-        for (monitor, assignment) in &active {
-            let existing = self.outputs.iter().find(|o| o.monitor.id == monitor.id);
-            if replacement.is_some()
-                || existing.is_none_or(|o| o.monitor != **monitor || o.assignment != **assignment)
-            {
-                prepared.push(Output::new(
+        reconciliation::reconcile(
+            &mut self.outputs,
+            &mut self.config,
+            replacement,
+            |config| {
+                let desired: Vec<_> = monitors
+                    .iter()
+                    .filter_map(|monitor| {
+                        monitor
+                            .assignment(config)
+                            .map(|assignment| (monitor.clone(), assignment.clone()))
+                    })
+                    .collect();
+                ensure!(
+                    desired.len() <= 16,
+                    "at most 16 active outputs are supported"
+                );
+                Ok(desired)
+            },
+            |output, (monitor, assignment)| {
+                output.monitor == *monitor && output.assignment == *assignment
+            },
+            |(monitor, assignment)| {
+                Output::new(
                     &self.instance,
                     &mut self.gpu,
                     desktop,
-                    (*monitor).clone(),
-                    (*assignment).clone(),
-                )?);
-            }
-        }
-        // All fallible preparation is complete before any visible wallpaper changes.
-        self.outputs.retain(|o| {
-            active.iter().any(|(m, _)| m.id == o.monitor.id)
-                && !prepared.iter().any(|p| p.monitor.id == o.monitor.id)
-        });
-        for output in prepared {
+                    monitor.clone(),
+                    assignment.clone(),
+                )
+            },
+        )?;
+        for output in &self.outputs {
             output.window.show();
-            eprintln!(
-                "Wisp: assigned {} to {}",
-                output.assignment.package.display(),
-                output.monitor.name
-            );
-            self.outputs.push(output);
         }
         // Explorer can reorder its raised desktop children independently.
         for output in &self.outputs {
             if let Err(error) = output.window.place(desktop) {
                 eprintln!("Wisp: could not restore wallpaper position: {error:#}");
             }
-        }
-        if let Some(config) = replacement {
-            self.config = config;
         }
         Ok(())
     }
@@ -304,6 +314,7 @@ impl Output {
         configure(&surface, gpu, &config)?;
         let now = Instant::now();
         Ok(Self {
+            instance_id: wisp_host::status::next_output_identity(),
             renderer,
             surface,
             window,

@@ -8,12 +8,17 @@ use std::{
 use wisp_format::{Package, PackageLimits, ParameterValue};
 use wisp_runtime::Wallpaper;
 
+pub mod reconciliation;
+pub mod status;
+
 pub struct Options {
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub list_outputs: bool,
     pub json: bool,
     pub frames: Option<u64>,
+    pub status_path: Option<PathBuf>,
+    pub stop_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
