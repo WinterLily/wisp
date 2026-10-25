@@ -16,3 +16,6 @@ wgpu.workspace = true
 winit.workspace = true
 wisp-runtime.workspace = true
 wisp-format.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
