@@ -120,6 +120,10 @@ fn main() -> Result<()> {
             .open(path)?;
         file.try_lock_exclusive()
             .context("a managed wallpaper daemon is already running")?;
+        // Refresh ownership before status publication so a previous process's snapshot is stale.
+        use std::io::Write;
+        file.set_len(0)?;
+        writeln!(&file, "{}", std::process::id())?;
         Some(file)
     } else {
         None

@@ -89,7 +89,18 @@ pub fn status(library: &Library) -> Result<Option<wisp_host::status::DaemonStatu
     if !running(library)? {
         return Ok(None);
     }
-    match wisp_host::status::DaemonStatus::read(&library.root.join("daemon.status.json")) {
+    let path = library.root.join("daemon.status.json");
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let ownership = std::fs::metadata(library.root.join("daemon.lock"))?;
+    // An acquired lock belongs to the new process before it can replace a stale ready snapshot.
+    if metadata.modified()? < ownership.modified()? {
+        return Ok(None);
+    }
+    match wisp_host::status::DaemonStatus::read(&path) {
         Ok(status) => Ok(Some(status)),
         Err(error)
             if error
@@ -264,6 +275,15 @@ mod tests {
         status.running = true;
         status.write(&path).unwrap();
         drop(lock);
+        // A concurrent process spawn may inherit the descriptor until close-on-exec runs.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while daemon::running(&library).unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "released daemon lock remained held"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert!(!daemon::ready(&library).unwrap());
         assert!(daemon::status(&library).unwrap().is_none());
     }
@@ -290,5 +310,25 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".stop")
         }));
+    }
+    #[test]
+    fn a_new_lock_owner_cannot_reuse_the_previous_daemons_ready_snapshot() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        lock.set_modified(published + Duration::from_secs(2))
+            .unwrap();
+        assert!(running(&library).unwrap());
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+        lock.set_modified(published - Duration::from_secs(2))
+            .unwrap();
+        assert!(ready(&library).unwrap());
     }
 }
