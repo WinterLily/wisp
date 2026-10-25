@@ -8,6 +8,8 @@ mod graph_canvas;
 mod graph_ui;
 #[path = "icons.rs"]
 mod icons;
+#[path = "motion.rs"]
+mod motion;
 #[path = "style.rs"]
 mod style;
 use crate::{
@@ -37,8 +39,10 @@ use wisp_format::{Parameter, ParameterValue};
 use wisp_host::{Assignment, Config, MonitorInfo};
 use wisp_runtime::{Globals, Wallpaper};
 
-fn button<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Button<'a, Message> {
-    iced_button(content).padding([9, 12]).style(style::quiet)
+fn button<'a>(content: impl Into<Element<'a, Message>>) -> motion::Button<'a, Message> {
+    motion::Button::new(content)
+        .padding([9, 12])
+        .style(style::quiet)
 }
 
 fn scrollable<'a>(
@@ -1024,9 +1028,13 @@ impl App {
             layout = layout.push(navigation);
         }
         layout = layout.push(
-            container(content)
-                .padding(if editing { 8 } else { 24 })
-                .height(Fill),
+            container(motion::entrance(
+                content,
+                self.page as u64,
+                iced::Vector::new(0., 12.),
+            ))
+            .padding(if editing { 8 } else { 24 })
+            .height(Fill),
         );
         // Keep operational feedback available without turning it into another panel.
         if !self.focus_mode || !editing {
@@ -1213,6 +1221,7 @@ impl App {
             );
             cards = cards.push(
                 button(card)
+                    .selected(self.selected.as_ref() == Some(&item.record.key))
                     .width(Fill)
                     .padding(10)
                     .style(if self.selected.as_ref() == Some(&item.record.key) {
@@ -1312,7 +1321,7 @@ impl App {
                     .spacing(14)
                     .into(),
                 };
-                workspace = workspace.push(
+                workspace = workspace.push(motion::entrance(
                     container(
                         column![
                             row![
@@ -1334,7 +1343,9 @@ impl App {
                     .width(280)
                     .height(Fill)
                     .style(style::panel),
-                );
+                    panel as u64,
+                    iced::Vector::new(24., 0.),
+                ));
             }
             detail = detail.push(workspace).push(
                 row![

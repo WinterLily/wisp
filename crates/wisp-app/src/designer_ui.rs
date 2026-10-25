@@ -829,13 +829,15 @@ impl App {
                 controls,
             ]
             .spacing(16);
-            workspace = workspace.push(
+            workspace = workspace.push(motion::entrance(
                 container(inspector)
                     .padding(16)
                     .width(316)
                     .height(Fill)
                     .style(style::panel),
-            );
+                panel as u64,
+                iced::Vector::new(24., 0.),
+            ));
         }
         column![toolbar, workspace].spacing(6).height(Fill).into()
     }
