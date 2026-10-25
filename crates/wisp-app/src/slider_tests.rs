@@ -1,8 +1,7 @@
 use super::*;
 use crate::{designer::Draft, layers::ControlId};
 use designer_ui::{
-    DesignerMessage, DesignerPanel,
-    layer_ui::{LayerMessage, LayerTab},
+    DesignEffect, DesignerMessage, DesignerPanel, DesignerSelection, layer_ui::LayerMessage,
 };
 use iced::{Event, Point, Rectangle, Size, mouse};
 use iced_wgpu::core::{Layout, Shell, clipboard, layout, widget::Tree};
@@ -18,7 +17,8 @@ fn designer() -> (tempfile::TempDir, App) {
     let (mut app, _) = App::new(library, Settings::default(), None, None);
     app.page = Page::Designer;
     app.designer.draft = Some(Arc::new(draft));
-    app.designer.panel = Some(DesignerPanel::Effects);
+    app.designer.panel = Some(DesignerPanel::Layers);
+    app.designer.selection = DesignerSelection::Effect(DesignEffect::Pulse);
     let _ = app.designer_update(DesignerMessage::Compiled(Ok((wallpaper, String::new()))));
     (temporary, app)
 }
@@ -125,7 +125,7 @@ fn renderer() -> iced_wgpu::Renderer {
     iced_wgpu::Renderer::new(engine, iced::Font::DEFAULT, iced::Pixels(14.))
 }
 
-const WINDOW_SIZE: Size = Size::new(1180., 1000.);
+const WINDOW_SIZE: Size = Size::new(1180., 1400.);
 
 fn slider_bounds(layout: Layout<'_>, bounds: &mut Vec<Rectangle>) {
     if layout.children().count() == 0
@@ -183,9 +183,9 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
         let (_temporary, mut app) = designer();
         if layers {
             let stack = Arc::make_mut(app.designer.draft.as_mut().unwrap()).enable_layers();
-            stack.layers[0].preset(crate::layers::Effect::Hair);
+            stack.add_effect(0, crate::layers::Effect::Hair).unwrap();
             app.designer.panel = Some(DesignerPanel::Layers);
-            app.designer.layer_tab = LayerTab::Motion;
+            app.designer.selection = DesignerSelection::LayerEffect(0);
         }
         app.busy = true;
         app.designer.compiling = true;
@@ -198,7 +198,7 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
         );
         let mut bounds = Vec::new();
         slider_bounds(Layout::new(&node), &mut bounds);
-        assert_eq!(bounds.len(), if layers { 4 } else { 7 });
+        assert_eq!(bounds.len(), if layers { 5 } else { 2 });
         drop(element);
         for bounds in bounds {
             for (event, fraction) in [
@@ -219,7 +219,10 @@ fn effects_sliders_follow_pointer_across_view_rebuilds_while_compiling() {
                         assert_eq!(draft.design.values[id], *value);
                     }
                     Message::Designer(DesignerMessage::Layer(LayerMessage::Value(id, value))) => {
-                        assert_eq!(draft.layers.as_ref().unwrap().layers[0].value(*id), *value);
+                        assert_eq!(
+                            draft.layers.as_ref().unwrap().layers[0].effects[0].value(*id),
+                            *value
+                        );
                     }
                     _ => panic!("slider emitted an unexpected message"),
                 }

@@ -418,6 +418,12 @@ fn upgrading_legacy_effects_preserves_settings_and_separates_shared_alpha_masks(
     stack.layers[1].preset(Effect::Hair);
     stack.layers[1].amplitude = 0.07;
     stack.layers[1].mask.as_mut().unwrap().composition = true;
+    let mut invalid = stack.clone();
+    invalid.layers[0].preset(Effect::Wave);
+    invalid.layers[1].effects = vec![wisp_app::layers::LayerEffect::new(Effect::Hair); 8];
+    let before = serde_json::to_value(&invalid).unwrap();
+    assert!(invalid.upgrade_effects().is_err());
+    assert_eq!(serde_json::to_value(&invalid).unwrap(), before);
     let image_mask = stack.layers[1].mask.as_ref().unwrap().asset.clone();
     let pixels = stack.assets[&image_mask].bytes.clone();
     stack.upgrade_effects().unwrap();
@@ -439,4 +445,58 @@ fn upgrading_legacy_effects_preserves_settings_and_separates_shared_alpha_masks(
     stack.upgrade_effects().unwrap();
     assert_eq!(stack.layers[1].effects.len(), 1);
     draft.compile().unwrap();
+}
+
+#[test]
+fn attached_effect_order_controls_weather_coordinates_and_budget_failures_are_atomic() {
+    use wisp_app::layers::{ImportTarget, LayerTarget};
+    let temporary = tempfile::tempdir().unwrap();
+    let mut draft = draft(temporary.path());
+    let stack = draft.layers.as_mut().unwrap();
+    stack.add_effect(0, Effect::Rain).unwrap();
+    stack.add_effect(0, Effect::Wave).unwrap();
+    for wave_above_rain in [true, false] {
+        let graph = draft.graph().unwrap();
+        let uv = graph
+            .nodes
+            .iter()
+            .find_map(|node| match &node.op {
+                Op::Weather { uv, .. } => Some(uv),
+                _ => None,
+            })
+            .unwrap();
+        let coordinates = &graph.nodes.iter().find(|node| &node.id == uv).unwrap().op;
+        assert_eq!(matches!(coordinates, Op::Wave { .. }), wave_above_rain);
+        draft.compile().unwrap();
+        draft.layers.as_mut().unwrap().layers[0].effects.swap(0, 1);
+    }
+    let stack = draft.layers.as_mut().unwrap();
+    for _ in 0..4 {
+        stack
+            .import(&temporary.path().join("source.png"), ImportTarget::Layer)
+            .unwrap();
+    }
+    while stack.assets.len() < 20 {
+        let index = stack
+            .layers
+            .iter()
+            .position(|layer| layer.effects.len() < 8)
+            .unwrap();
+        stack.add_effect(index, Effect::Hair).unwrap();
+    }
+    let before = serde_json::to_value(&stack).unwrap();
+    let assets = stack.assets.len();
+    let index = stack
+        .layers
+        .iter()
+        .position(|layer| layer.effects.len() < 8)
+        .unwrap();
+    assert!(stack.add_effect(index, Effect::Hair).is_err());
+    assert_eq!(serde_json::to_value(&stack).unwrap(), before);
+    assert_eq!(stack.assets.len(), assets);
+    stack
+        .blank_mask_for(LayerTarget::Effect(0, 0), false)
+        .unwrap();
+    assert_eq!(stack.assets.len(), assets);
+    stack.validate().unwrap();
 }

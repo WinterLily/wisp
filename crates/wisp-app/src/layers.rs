@@ -738,6 +738,12 @@ impl Stack {
         Ok(index)
     }
     pub fn upgrade_effects(&mut self) -> Result<()> {
+        let mut upgraded = self.clone();
+        upgraded.upgrade_legacy_effects()?;
+        *self = upgraded;
+        Ok(())
+    }
+    fn upgrade_legacy_effects(&mut self) -> Result<()> {
         for index in 0..self.layers.len() {
             if self.layers[index].effect == Effect::None {
                 continue;
@@ -777,8 +783,9 @@ impl Stack {
             if unmasked_motion {
                 self.blank_mask_for(LayerTarget::Effect(index, 0), true)?;
             }
-            self.layers[index].effect = Effect::None;
+            self.layers[index].motion = EffectSettings::default();
         }
+        self.prune();
         self.version = 3;
         Ok(())
     }
@@ -932,23 +939,26 @@ impl Stack {
                     strength,
                 });
             }
+            let mut weather = Vec::new();
+            // Upper effects remap the image and effects below them, so mixed stacks keep their order.
             for effect in l.effects.iter().rev().filter(|effect| effect.visible) {
-                let mask = b.mask(effect.mask.as_ref(), &local, &one);
-                sample_uv = b.effect_uv(
-                    &effect.settings,
-                    &sample_uv,
-                    &local,
-                    &mask,
-                    effect.mask.is_some(),
-                );
+                let mask = b.mask(effect.mask.as_ref(), &sample_uv, &one);
+                if matches!(
+                    effect.settings.effect,
+                    Effect::Droplets | Effect::Rain | Effect::Ripples
+                ) {
+                    weather.push((&effect.settings, sample_uv.clone(), mask));
+                } else {
+                    sample_uv =
+                        b.effect_uv(&effect.settings, &sample_uv, &mask, effect.mask.is_some());
+                }
             }
             let mut color = b.add(Op::Image {
                 asset: l.asset.clone(),
                 uv: sample_uv.clone(),
             });
-            for effect in l.effects.iter().filter(|effect| effect.visible) {
-                let mask = b.mask(effect.mask.as_ref(), &local, &one);
-                color = b.effect_color(&effect.settings, color, &local, mask);
+            for (settings, weather_uv, mask) in weather.into_iter().rev() {
+                color = b.effect_color(settings, color, &weather_uv, mask);
             }
             if self.version == 1
                 && matches!(l.effect, Effect::Droplets | Effect::Rain | Effect::Ripples)
@@ -1051,7 +1061,6 @@ impl Builder<'_> {
         &mut self,
         settings: &EffectSettings,
         uv: &str,
-        local: &str,
         mask: &str,
         has_mask: bool,
     ) -> String {
@@ -1094,7 +1103,7 @@ impl Builder<'_> {
             Effect::Displacement if settings.displacement.is_some() => {
                 let map = self.add(Op::Image {
                     asset: settings.displacement.clone().unwrap(),
-                    uv: local.into(),
+                    uv: uv.into(),
                 });
                 let strength = self.constant(V::Float(settings.strength * 0.15));
                 self.add(Op::Displacement {
