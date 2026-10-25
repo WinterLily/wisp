@@ -522,7 +522,7 @@ impl Stack {
         let mut image = wisp_compiler::decode_source_image(&self.assets[&id].bytes)?
             .resize_exact(256, 256, image::imageops::FilterType::Triangle)
             .into_luma8();
-        paint_raster(&mut image, from, to, radius, value, 1.)?;
+        crate::painting::paint_brush(&mut image, from, to, radius, value, 1., None)?;
         Arc::make_mut(&mut self.assets).insert(id, encode(image::DynamicImage::ImageLuma8(image))?);
         Ok(())
     }
@@ -708,56 +708,6 @@ impl Stack {
         }
         Ok(composed)
     }
-}
-/// Paint directly into a retained raster. Only the stroke's bounding box is visited.
-/// `aspect` is source width / height, keeping the brush circular on fitted images.
-pub(crate) fn paint_raster(
-    image: &mut image::GrayImage,
-    from: [f32; 2],
-    to: [f32; 2],
-    radius: f32,
-    value: u8,
-    aspect: f32,
-) -> Result<[u32; 4]> {
-    ensure!(
-        from.into_iter()
-            .chain(to)
-            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
-            && radius.is_finite()
-            && (0.005..=0.25).contains(&radius),
-        "invalid brush stroke"
-    );
-    ensure!(aspect.is_finite() && aspect > 0., "invalid brush aspect");
-    let extent = [aspect.max(1.), (1. / aspect).max(1.)];
-    let dimensions = [image.width() as f32, image.height() as f32];
-    let a = [from[0] * extent[0], from[1] * extent[1]];
-    let ab = [(to[0] - from[0]) * extent[0], (to[1] - from[1]) * extent[1]];
-    let length2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let edge = (extent[0] / dimensions[0]).max(extent[1] / dimensions[1]);
-    let low = [0, 1].map(|i| {
-        ((from[i].min(to[i]) - radius / extent[i]) * dimensions[i])
-            .floor()
-            .max(0.) as u32
-    });
-    let high = [0, 1].map(|i| {
-        ((from[i].max(to[i]) + radius / extent[i]) * dimensions[i])
-            .ceil()
-            .min(dimensions[i]) as u32
-    });
-    for y in low[1]..high[1] {
-        for x in low[0]..high[0] {
-            let q = [
-                (x as f32 + 0.5) / dimensions[0] * extent[0] - a[0],
-                (y as f32 + 0.5) / dimensions[1] * extent[1] - a[1],
-            ];
-            let t = ((q[0] * ab[0] + q[1] * ab[1]) / length2.max(0.0000001)).clamp(0., 1.);
-            let distance = ((q[0] - t * ab[0]).powi(2) + (q[1] - t * ab[1]).powi(2)).sqrt();
-            let alpha = ((radius - distance) / edge).clamp(0., 1.);
-            let pixel = image.get_pixel_mut(x, y);
-            pixel.0[0] = (pixel.0[0] as f32 * (1. - alpha) + value as f32 * alpha).round() as u8;
-        }
-    }
-    Ok([low[0], low[1], high[0], high[1]])
 }
 pub(crate) fn encode(image: image::DynamicImage) -> Result<Asset> {
     let mut bytes = Cursor::new(vec![]);

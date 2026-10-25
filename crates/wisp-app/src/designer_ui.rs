@@ -51,7 +51,13 @@ pub(super) struct Designer {
     pub layer: usize,
     pub brush: f32,
     pub erase: bool,
+    pub paint_tool: crate::painting::PaintTool,
+    pub airbrush_flow: f32,
+    pub magic_wand: crate::painting::MagicWandOptions,
+    pub lasso_vertices: Vec<[f32; 2]>,
+    pub paint_session: u64,
     pub paint_source: Option<image::Handle>,
+    pub paint_source_pixels: Option<::image::RgbaImage>,
     pub paint_mask: Option<image::Handle>,
     pub paint_overlay: Vec<u8>,
     pub paint_pixels: Option<::image::GrayImage>,
@@ -64,6 +70,13 @@ pub(super) struct Designer {
     pub compiling: bool,
 }
 impl Designer {
+    fn airbrush_flow(&self) -> f32 {
+        if self.airbrush_flow == 0. {
+            0.15
+        } else {
+            self.airbrush_flow
+        }
+    }
     fn paint_due(&self, now: Instant) -> bool {
         self.paint_pending
             && self
