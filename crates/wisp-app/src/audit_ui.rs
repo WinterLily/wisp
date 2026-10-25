@@ -306,6 +306,14 @@ impl Command {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaptureOperation {
+    LibraryScan,
+    LibraryLoad,
+    Designer,
+    Graph,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CaptureCompletion {
     Checkpoint,
     AuditFinish,
@@ -326,11 +334,32 @@ impl App {
             _ => self.preview.as_ref(),
         }
     }
+    pub(super) fn record_capture_operation(
+        &mut self,
+        operation: CaptureOperation,
+        error: Option<String>,
+    ) {
+        if error.is_some()
+            || self
+                .capture_operation_error
+                .as_ref()
+                .is_some_and(|(source, _)| *source == operation)
+        {
+            self.capture_operation_error = error.map(|error| (operation, error));
+        }
+    }
     pub(super) fn capture_error(&self) -> Option<String> {
-        self.startup_error.clone().or_else(|| {
-            self.active_preview()
-                .and_then(|preview| preview.status.lock().unwrap().error.clone())
-        })
+        self.startup_error
+            .clone()
+            .or_else(|| {
+                self.capture_operation_error
+                    .as_ref()
+                    .map(|(_, error)| error.clone())
+            })
+            .or_else(|| {
+                self.active_preview()
+                    .and_then(|preview| preview.status.lock().unwrap().error.clone())
+            })
     }
     fn capture(&mut self, path: PathBuf, completion: CaptureCompletion) -> Task<Message> {
         self.active_capture = Some(Capture {
@@ -411,11 +440,9 @@ impl App {
             return Task::none();
         }
         let timed_out = self.started.elapsed() > Duration::from_secs(45);
-        let gpu_error = self
-            .active_preview()
-            .and_then(|preview| preview.status.lock().unwrap().error.clone());
+        let capture_error = self.capture_error();
         if self.frame_limit.is_some() {
-            if let Some(error) = self.startup_error.clone().or(gpu_error.clone()) {
+            if let Some(error) = capture_error.clone() {
                 return self.fail_audit(error);
             }
             if self
@@ -489,7 +516,7 @@ impl App {
             && self.started.elapsed() >= self.screenshot_delay
             && (!self.busy || timed_out)
         {
-            if let Some(error) = self.startup_error.clone().or(gpu_error) {
+            if let Some(error) = capture_error {
                 *self.exit_failure.lock().unwrap() = Some(error);
             }
             if timed_out && self.busy {
@@ -874,6 +901,119 @@ mod tests {
                     .contains(expected_error)
             );
         }
+    }
+    #[test]
+    fn accepted_cpu_failures_allow_checkpoint_capture_and_matching_recovery() {
+        for failure in 0..5 {
+            let (dir, mut app) = app();
+            let wallpaper = Arc::new(
+                Wallpaper::from_package(
+                    &crate::graph::Document::default().compile().unwrap().package,
+                )
+                .unwrap(),
+            );
+            let error = "intentional CPU failure".to_owned();
+            let message = match failure {
+                0 => Message::Loaded(Err(error.clone())),
+                1 => Message::Designer(DesignerMessage::Opened(Err(error.clone()))),
+                2 => Message::Designer(DesignerMessage::Compiled(Err(error.clone()))),
+                3 => Message::Graph(GraphMessage::Opened(Err(error.clone()))),
+                _ => Message::Graph(GraphMessage::Compiled(0, Err(error.clone()))),
+            };
+            let _ = app.update(message);
+            app.assert_state(&if failure == 4 {
+                serde_json::json!({ "graph_diagnostic": error })
+            } else {
+                serde_json::json!({ "status_contains": error })
+            })
+            .unwrap();
+            let checkpoint = dir.path().join("invalid.png");
+            let _ = app.capture(checkpoint.clone(), CaptureCompletion::Checkpoint);
+            let screenshot =
+                iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+            let _ = app.update(Message::Screenshot(screenshot.clone()));
+            assert!(checkpoint.is_file());
+            assert!(app.exit_failure.lock().unwrap().is_none());
+            let _ = app.update(Message::Scanned(Ok((vec![], vec![]))));
+            let _ = app.update(Message::Designer(DesignerMessage::Opened(Ok(None))));
+            let _ = app.update(Message::Graph(GraphMessage::Opened(Ok(None))));
+            assert_eq!(app.capture_error(), Some(error));
+            let recovered = match failure {
+                0 => Message::Loaded(Ok(("wallpaper".into(), wallpaper, BTreeMap::new()))),
+                1 | 2 => {
+                    Message::Designer(DesignerMessage::Compiled(Ok((wallpaper, "ready".into()))))
+                }
+                _ => Message::Graph(GraphMessage::Compiled(0, Ok((wallpaper, "ready".into())))),
+            };
+            let _ = app.update(recovered);
+            assert!(app.capture_error().is_none());
+            let final_path = dir.path().join("recovered.png");
+            app.final_screenshot = Some(final_path.clone());
+            app.audit_commands.push_back(Command::Finish {});
+            let _ = app.audit_poll();
+            let _ = app.update(Message::Screenshot(screenshot));
+            let _ = app.audit_poll();
+            assert!(final_path.is_file());
+            assert!(app.exit_failure.lock().unwrap().is_none());
+            assert!(app.audit_commands.is_empty());
+        }
+    }
+    #[test]
+    fn stale_graph_compiles_cannot_poison_or_clear_capture_and_frame_verdicts() {
+        let (dir, mut app) = app();
+        let wallpaper = Arc::new(
+            Wallpaper::from_package(&crate::graph::Document::default().compile().unwrap().package)
+                .unwrap(),
+        );
+        app.page = Page::Graph;
+        app.graph.revision = 2;
+        let _ = app.update(Message::Graph(GraphMessage::Compiled(
+            2,
+            Err("current error".into()),
+        )));
+        let _ = app.update(Message::Graph(GraphMessage::Compiled(
+            1,
+            Ok((wallpaper.clone(), "stale".into())),
+        )));
+        assert_eq!(app.capture_error().as_deref(), Some("current error"));
+        let _ = app.update(Message::Graph(GraphMessage::Compiled(
+            2,
+            Ok((wallpaper, "ready".into())),
+        )));
+        let _ = app.update(Message::Graph(GraphMessage::Compiled(
+            1,
+            Err("stale error".into()),
+        )));
+        assert!(app.capture_error().is_none());
+        let preview = app.graph.preview.as_ref().unwrap();
+        {
+            let mut status = preview.status.lock().unwrap();
+            status.rendered_generation = Some(preview.generation);
+            status.frames = 2;
+        }
+        app.frame_limit = Some(2);
+        app.final_screenshot = Some(dir.path().join("frames.png"));
+        app.audit_commands.push_back(Command::Finish {});
+        let _ = app.audit_poll();
+        assert!(app.frame_limit.is_none());
+        assert!(app.active_capture.is_some());
+        let screenshot =
+            iced::window::Screenshot::new(vec![10, 20, 30, 255], iced::Size::new(1, 1), 1.);
+        let _ = app.update(Message::Screenshot(screenshot));
+        let _ = app.audit_poll();
+        assert!(app.exit_failure.lock().unwrap().is_none());
+        assert!(app.audit_commands.is_empty());
+        assert!(dir.path().join("frames.png").is_file());
+    }
+    #[test]
+    fn successful_cpu_results_preserve_unresolved_configuration_failures() {
+        let (_dir, mut app) = app();
+        app.startup_error = Some("invalid configuration".into());
+        let _ = app.update(Message::Scanned(Ok((vec![], vec![]))));
+        assert_eq!(
+            app.capture_error().as_deref(),
+            Some("invalid configuration")
+        );
     }
     #[test]
     fn malformed_commands_fail_and_screenshots_block_the_queue_until_written() {

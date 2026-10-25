@@ -271,6 +271,7 @@ struct App {
     screenshot_delay: Duration,
     active_capture: Option<audit_ui::Capture>,
     startup_error: Option<String>,
+    capture_operation_error: Option<(audit_ui::CaptureOperation, String)>,
     exit_failure: Arc<Mutex<Option<String>>>,
     audit_commands: std::collections::VecDeque<audit_ui::Command>,
     audit_wait_until: Option<Instant>,
@@ -363,6 +364,7 @@ impl App {
             screenshot_delay: Duration::from_secs(1),
             active_capture: None,
             startup_error: config_result_error,
+            capture_operation_error: None,
             exit_failure: Arc::new(Mutex::new(None)),
             audit_commands: Default::default(),
             audit_wait_until: None,
@@ -422,20 +424,37 @@ impl App {
         )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
-        let startup_error = match &message {
-            Message::Scanned(Err(error))
-            | Message::Loaded(Err(error))
-            | Message::Designer(DesignerMessage::Opened(Err(error)))
-            | Message::Designer(DesignerMessage::Compiled(Err(error)))
-            | Message::Graph(graph_ui::GraphMessage::Opened(Err(error)))
-            | Message::Graph(graph_ui::GraphMessage::Compiled(_, Err(error))) => {
-                Some(error.clone())
+        use audit_ui::CaptureOperation;
+        let capture_operation = match &message {
+            Message::Scanned(Err(error)) => {
+                Some((CaptureOperation::LibraryScan, Some(error.clone())))
             }
-            Message::Scanned(Ok((_, errors))) if !errors.is_empty() => Some(errors.join("; ")),
+            Message::Scanned(Ok((_, errors))) => Some((
+                CaptureOperation::LibraryScan,
+                (!errors.is_empty()).then(|| errors.join("; ")),
+            )),
+            Message::Loaded(result) => Some((
+                CaptureOperation::LibraryLoad,
+                result.as_ref().err().cloned(),
+            )),
+            Message::Designer(DesignerMessage::Opened(Err(error))) => {
+                Some((CaptureOperation::Designer, Some(error.clone())))
+            }
+            Message::Designer(DesignerMessage::Compiled(result)) => {
+                Some((CaptureOperation::Designer, result.as_ref().err().cloned()))
+            }
+            Message::Graph(graph_ui::GraphMessage::Opened(Err(error))) => {
+                Some((CaptureOperation::Graph, Some(error.clone())))
+            }
+            Message::Graph(graph_ui::GraphMessage::Compiled(revision, result))
+                if *revision == self.graph.revision =>
+            {
+                Some((CaptureOperation::Graph, result.as_ref().err().cloned()))
+            }
             _ => None,
         };
-        if let Some(error) = startup_error {
-            self.startup_error = Some(error);
+        if let Some((operation, error)) = capture_operation {
+            self.record_capture_operation(operation, error);
         }
         match message {
             Message::Graph(message) => return self.graph_update(message),
