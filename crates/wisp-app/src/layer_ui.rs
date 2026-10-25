@@ -1,5 +1,5 @@
 use super::*;
-use crate::layers::{ControlId, ImportTarget, Stack};
+use crate::layers::{ControlId, ImportTarget};
 use crate::painting::PaintTool;
 use iced::widget::column;
 use iced::{
@@ -12,9 +12,8 @@ use iced::{
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(in crate::ui) enum LayerTab {
-    Adjust,
     #[default]
-    Motion,
+    Adjust,
     Mask,
 }
 
@@ -233,6 +232,18 @@ impl App {
                 self.busy = false;
                 match result {
                     Ok(Some(draft)) => {
+                        let previous_count = self
+                            .designer
+                            .draft
+                            .as_ref()
+                            .and_then(|draft| draft.layers.as_ref())
+                            .map_or(1, |stack| stack.layers.len());
+                        if let Some(stack) = &draft.layers
+                            && stack.layers.len() > previous_count
+                        {
+                            self.designer.layer = stack.layers.len() - 1;
+                            self.designer.selection = designer_ui::DesignerSelection::Image;
+                        }
                         self.designer.draft = Some(draft);
                         self.designer.dirty = true;
                         self.refresh_painter();
@@ -248,11 +259,12 @@ impl App {
                     .draft
                     .as_ref()
                     .and_then(|draft| draft.layers.as_ref())
-                    .is_none_or(|stack| index >= stack.layers.len())
+                    .map_or(index != 0, |stack| index >= stack.layers.len())
                 {
                     self.status = "Could not select missing layer".into();
                     return Task::none();
                 }
+                self.designer.selection = designer_ui::DesignerSelection::Image;
                 self.designer.layer = index;
                 self.refresh_painter();
             }
@@ -362,7 +374,7 @@ impl App {
                 let mut compile = true;
                 let result = (|| -> Result<()> {
                     match message {
-                        Enable => {}
+                        Enable => self.designer.selection = designer_ui::DesignerSelection::Image,
                         Name(v) => {
                             stack.layers[i].name = v;
                             compile = false;
@@ -435,63 +447,80 @@ impl App {
         }
         Task::none()
     }
-    pub(super) fn layers_view<'a>(&'a self, stack: &'a Stack) -> Element<'a, Message> {
+    pub(super) fn layer_rows_view<'a>(
+        &'a self,
+        layers: &[crate::layers::Layer],
+    ) -> Element<'a, Message> {
         use LayerMessage::*;
-        let action = |m| Message::Designer(DesignerMessage::Layer(m));
+        let action = |message| Message::Designer(DesignerMessage::Layer(message));
         let enabled = !self.busy;
-        let i = self.designer.layer.min(stack.layers.len() - 1);
-        let l = &stack.layers[i];
-        let tab = self.designer.layer_tab;
-        let mut panel = column![
-            row![
-                text("Front to back").size(11),
-                space().width(Fill),
-                icon_button(
-                    Icon::Create,
-                    "Add image layer",
-                    (enabled && stack.layers.len() < 6)
-                        .then_some(action(Import(ImportTarget::Layer))),
-                    false
-                )
-            ]
-            .align_y(iced::Center),
-        ]
-        .spacing(10);
-        for (index, layer) in stack.layers.iter().enumerate().rev() {
+        let selected_index = self.designer.layer.min(layers.len() - 1);
+        let mut panel = column![].spacing(6);
+        for (index, layer) in layers.iter().enumerate().rev() {
             panel = panel.push(
                 row![
-                    checkbox(layer.visible).on_toggle(move |v| action(Visible(index, v))),
-                    button(text(&layer.name).size(14))
-                        .width(Fill)
-                        .style(if i == index {
+                    checkbox(layer.visible).on_toggle_maybe(
+                        enabled.then_some(move |value| action(Visible(index, value)))
+                    ),
+                    button(
+                        row![
+                            icons::glyph(Icon::Layers, 14),
+                            text(layer.name.clone()).size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center)
+                    )
+                    .width(Fill)
+                    .style(
+                        if self.designer.selection == designer_ui::DesignerSelection::Image
+                            && selected_index == index
+                        {
                             style::selected
                         } else {
                             style::quiet
-                        })
-                        .on_press_maybe(enabled.then_some(action(Select(index)))),
+                        }
+                    )
+                    .on_press_maybe(enabled.then_some(action(Select(index)))),
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
             );
         }
+        panel.into()
+    }
+    pub(super) fn layer_settings_view<'a>(
+        &'a self,
+        layer: &crate::layers::Layer,
+        index: usize,
+        layer_count: usize,
+    ) -> Element<'a, Message> {
+        use LayerMessage::*;
+        let action = |message| Message::Designer(DesignerMessage::Layer(message));
+        let enabled = !self.busy;
+        let tab = self.designer.layer_tab;
+        let mut panel = column![
+            text(layer.name.clone()).size(16),
+            text("Image layer").size(12)
+        ]
+        .spacing(10);
         panel = panel.push(
             row![
                 icon_button(
                     Icon::Forward,
                     "Bring layer forward",
-                    (enabled && i + 1 < stack.layers.len()).then_some(action(Move(true))),
+                    (enabled && index + 1 < layer_count).then_some(action(Move(true))),
                     false
                 ),
                 icon_button(
                     Icon::Backward,
                     "Send layer backward",
-                    (enabled && i > 0).then_some(action(Move(false))),
+                    (enabled && index > 0).then_some(action(Move(false))),
                     false
                 ),
                 icon_button(
                     Icon::Remove,
                     "Remove layer",
-                    (enabled && stack.layers.len() > 1).then_some(action(Remove)),
+                    (enabled && layer_count > 1).then_some(action(Remove)),
                     false
                 ),
             ]
@@ -509,99 +538,36 @@ impl App {
         panel = panel.push(iced::widget::rule::horizontal(1)).push(
             row![
                 tab_button(Icon::Adjust, "Adjust", LayerTab::Adjust),
-                tab_button(Icon::Motion, "Motion", LayerTab::Motion),
                 tab_button(Icon::Mask, "Mask", LayerTab::Mask)
             ]
             .spacing(4),
         );
         if tab == LayerTab::Adjust {
             panel = panel
-                .push(text_input("Layer name", &l.name).on_input(move |v| action(Name(v))))
+                .push(text_input("Layer name", &layer.name).on_input(move |v| action(Name(v))))
                 .push(
                     pick_list(
                         wisp_ir::BlendMode::ALL.as_slice(),
-                        Some(l.blend),
+                        Some(layer.blend),
                         move |v| action(Blend(v)),
                     )
                     .width(Fill),
                 );
         }
-        if tab == LayerTab::Motion {
-            panel = panel.push(
-                pick_list(
-                    crate::layers::Effect::ALL.as_slice(),
-                    Some(l.effect),
-                    move |v| action(Effect(v)),
-                )
-                .width(Fill),
-            );
-            if l.effect == crate::layers::Effect::None {
-                panel = panel.push(text("Choose an effect to bring this layer to life.").size(13));
-            }
-        }
-        for c in crate::layers::CONTROLS {
+        for control in crate::layers::CONTROLS {
             let transform =
-                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&c.key);
-            if (tab == LayerTab::Adjust && !transform)
-                || (tab == LayerTab::Motion && (transform || c.key == "feather"))
-                || (tab == LayerTab::Mask && c.key != "feather")
+                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&control.key);
+            if (tab == LayerTab::Adjust && transform)
+                || (tab == LayerTab::Mask
+                    && control.id == ControlId::Feather
+                    && layer.mask.is_some())
             {
-                continue;
+                panel = panel.push(self.layer_control_view(layer, control));
             }
-            let weather = matches!(
-                l.effect,
-                crate::layers::Effect::Droplets
-                    | crate::layers::Effect::Rain
-                    | crate::layers::Effect::Ripples
-            );
-            if (c.key == "feather" && l.mask.is_none())
-                || (["density", "size", "size_x", "size_y"].contains(&c.key) && !weather)
-                || (c.key == "rain_direction" && l.effect != crate::layers::Effect::Rain)
-                || (["direction", "amplitude", "frequency"].contains(&c.key)
-                    && !matches!(
-                        l.effect,
-                        crate::layers::Effect::Hair
-                            | crate::layers::Effect::Clothing
-                            | crate::layers::Effect::Wave
-                            | crate::layers::Effect::Warp
-                    ))
-                || (c.key == "speed"
-                    && matches!(
-                        l.effect,
-                        crate::layers::Effect::None | crate::layers::Effect::Displacement
-                    ))
-                || (c.key == "strength"
-                    && !weather
-                    && l.effect != crate::layers::Effect::Displacement)
-            {
-                continue;
-            }
-            panel = panel.push(
-                column![
-                    row![
-                        text(c.label).size(12),
-                        space().width(Fill),
-                        text(format!("{:.2}", l.value(c.id))).size(12)
-                    ]
-                    .spacing(8),
-                    slider(c.min..=c.max, l.value(c.id), move |v| action(Value(
-                        c.id, v
-                    )))
-                    .step((c.max - c.min) / 200.)
-                    .on_release(action(Commit)),
-                ]
-                .spacing(7),
-            );
-        }
-        if tab == LayerTab::Motion && l.effect == crate::layers::Effect::Displacement {
-            panel =
-                panel.push(button("Choose displacement map…").on_press_maybe(
-                    enabled.then_some(action(Import(ImportTarget::Displacement(i)))),
-                ));
         }
         if tab == LayerTab::Mask {
             panel = panel.push(text("Paint where this layer moves or appears.").size(13));
-            if let Some(m) = &l.mask {
+            if let Some(m) = &layer.mask {
                 panel = panel
                     .push(
                         button("Paint mask…")
@@ -642,14 +608,72 @@ impl App {
                         .on_press_maybe(enabled.then_some(action(Mask(false)))),
                 );
             }
-            panel = panel
-                .push(
-                    button("Import mask…")
-                        .on_press_maybe(enabled.then_some(action(Import(ImportTarget::Mask(i))))),
-                )
-                .push(text("White reveals · Black anchors").size(11));
+            panel =
+                panel
+                    .push(button("Import mask…").on_press_maybe(
+                        enabled.then_some(action(Import(ImportTarget::Mask(index)))),
+                    ))
+                    .push(text("White reveals · Black anchors").size(11));
         }
+        let mut motion = column![
+            row![
+                icons::glyph(Icon::Motion, 16),
+                text("Motion & effects").size(15)
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            pick_list(
+                crate::layers::Effect::ALL.as_slice(),
+                Some(layer.effect),
+                move |value| action(Effect(value))
+            )
+            .width(Fill),
+        ]
+        .spacing(10);
+        if layer.effect == crate::layers::Effect::None {
+            motion = motion.push(text("Choose an effect to bring this layer to life.").size(12));
+        }
+        for control in crate::layers::CONTROLS {
+            if layer.effect.controls().contains(&control.id) {
+                motion = motion.push(self.layer_control_view(layer, control));
+            }
+        }
+        if layer.effect == crate::layers::Effect::Displacement {
+            motion = motion.push(button("Choose displacement map…").on_press_maybe(
+                enabled.then_some(action(Import(ImportTarget::Displacement(index)))),
+            ));
+        }
+        panel = panel.push(iced::widget::rule::horizontal(1)).push(
+            container(motion)
+                .padding(12)
+                .width(Fill)
+                .style(style::panel),
+        );
         panel.into()
+    }
+    fn layer_control_view<'a>(
+        &self,
+        layer: &crate::layers::Layer,
+        control: &'a crate::layers::Control,
+    ) -> Element<'a, Message> {
+        let action = |message| Message::Designer(DesignerMessage::Layer(message));
+        column![
+            row![
+                text(control.label).size(12),
+                space().width(Fill),
+                text(format!("{:.2}", layer.value(control.id))).size(12)
+            ]
+            .spacing(8),
+            slider(
+                control.min..=control.max,
+                layer.value(control.id),
+                move |value| action(LayerMessage::Value(control.id, value))
+            )
+            .step((control.max - control.min) / 200.)
+            .on_release(action(LayerMessage::Commit)),
+        ]
+        .spacing(7)
+        .into()
     }
     fn paint_controls(&self) -> Element<'_, Message> {
         use LayerMessage::*;

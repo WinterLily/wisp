@@ -1,6 +1,6 @@
 use super::*;
 use designer_ui::{
-    DesignEffect,
+    DesignEffect, DesignerSelection,
     layer_ui::{LayerMessage, MaskOption},
 };
 use graph_ui::GraphMessage;
@@ -48,6 +48,9 @@ pub(super) enum Command {
         id: String,
         value: f32,
     },
+    DesignerSelect {
+        layer: String,
+    },
     DesignerPanel {
         value: String,
     },
@@ -66,6 +69,12 @@ pub(super) enum Command {
         kind: String,
         #[serde(default)]
         index: usize,
+    },
+    LayerEffect {
+        effect: String,
+    },
+    LayerTab {
+        value: String,
     },
     LayerValue {
         id: String,
@@ -177,7 +186,11 @@ fn validate_state_expectations(
             | "graph_valid" | "preview_error" | "preview_ready" | "paint_dirty" => {
                 value.is_boolean()
             }
-            "parameter_errors" => value.as_u64().is_some(),
+            "parameter_errors" | "designer_layer" => value.as_u64().is_some(),
+            "designer_selection" => value.as_str().is_some_and(|value| {
+                matches!(value, "image" | "color")
+                    || DesignEffect::ALL.iter().any(|effect| effect.key() == value)
+            }),
             "graph_nodes" => value.is_null() || value.as_u64().is_some(),
             "designer_name" => value.is_null() || value.is_string(),
             "status" | "graph_diagnostic" | "status_contains" => value.is_string(),
@@ -306,9 +319,23 @@ impl Command {
                 enabled,
             )),
             DesignerValue { id, value } => designer(DesignerMessage::Value(id, value)),
+            DesignerSelect { layer: selection } => {
+                designer(DesignerMessage::Select(match selection.as_str() {
+                    "image" => DesignerSelection::Image,
+                    "color" => DesignerSelection::Color,
+                    key => DesignerSelection::Effect(
+                        DesignEffect::ALL
+                            .into_iter()
+                            .find(|effect| effect.key() == key)
+                            .context("unknown scene effect layer")?,
+                    ),
+                }))
+            }
+            DesignerPanel { value } if value == "effects" => {
+                designer(DesignerMessage::Select(DesignerSelection::Color))
+            }
             DesignerPanel { value } => designer(DesignerMessage::Panel(match value.as_str() {
                 "layers" => designer_ui::DesignerPanel::Layers,
-                "effects" => designer_ui::DesignerPanel::Effects,
                 "project" => designer_ui::DesignerPanel::Project,
                 _ => anyhow::bail!("unknown designer panel: {value}"),
             })),
@@ -325,6 +352,15 @@ impl Command {
                 },
                 path,
             )),
+            LayerEffect { effect } => layer(LayerMessage::Effect(
+                serde_json::from_value(serde_json::Value::String(effect))
+                    .context("unknown image layer effect")?,
+            )),
+            LayerTab { value } => layer(LayerMessage::Tab(match value.as_str() {
+                "adjust" => designer_ui::layer_ui::LayerTab::Adjust,
+                "mask" => designer_ui::layer_ui::LayerTab::Mask,
+                _ => anyhow::bail!("unknown layer tab: {value}"),
+            })),
             LayerValue { id, value } => layer(LayerMessage::Value(id.as_str().try_into()?, value)),
             LayerMask { white } => layer(LayerMessage::Mask(white)),
             LayerMaskFlag { flag, value } => layer(LayerMessage::MaskFlag(
@@ -466,6 +502,12 @@ impl App {
             "preview_error": preview.as_ref().is_some_and(|(_, status)| status.error.is_some()),
             "preview_ready": preview.as_ref().is_some_and(|(generation, status)| status.rendered_generation == Some(*generation) && status.error.is_none()),
             "designer_name": self.designer.draft.as_ref().map(|draft| &draft.design.name),
+            "designer_selection": match self.designer.selection {
+                DesignerSelection::Image => "image",
+                DesignerSelection::Color => "color",
+                DesignerSelection::Effect(effect) => effect.key(),
+            },
+            "designer_layer": self.designer.layer,
             "graph_nodes": self.graph.document.as_ref().map(|doc| doc.graph.nodes.len()),
             "paint_dirty": self.designer.paint_dirty,
         })
@@ -615,6 +657,40 @@ mod tests {
         app.busy = false;
         (dir, app)
     }
+    #[test]
+    fn layer_selection_and_effect_commands_are_auditable_and_reject_unknown_values() {
+        let (_dir, mut app) = app();
+        for key in ["image", "color", "parallax", "pulse", "blur", "vignette"] {
+            let command: Command = serde_json::from_value(serde_json::json!({
+                "command": "designer_select", "layer": key,
+            }))
+            .unwrap();
+            let _ = app.update(command.message().unwrap());
+            assert_eq!(app.state()["designer_selection"], key);
+        }
+        for command in [
+            serde_json::json!({"command": "designer_select", "layer": "unknown"}),
+            serde_json::json!({"command": "layer_effect", "effect": "unknown"}),
+            serde_json::json!({"command": "layer_tab", "value": "motion"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Command>(command)
+                    .unwrap()
+                    .message()
+                    .is_err()
+            );
+        }
+        for effect in crate::layers::Effect::ALL {
+            let command: Command = serde_json::from_value(serde_json::json!({
+                "command": "layer_effect", "effect": serde_json::to_value(effect).unwrap(),
+            }))
+            .unwrap();
+            assert!(
+                matches!(command.message().unwrap(), Message::Designer(DesignerMessage::Layer(LayerMessage::Effect(value))) if value == effect)
+            );
+        }
+    }
+
     #[test]
     fn erase_commands_route_to_the_same_paint_controls_as_the_ui() {
         let (_dir, mut app) = app();

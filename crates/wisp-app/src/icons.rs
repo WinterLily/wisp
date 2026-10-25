@@ -59,6 +59,15 @@ icons! {
     Disconnect => "unlink",
 }
 
+pub(super) fn glyph(icon: Icon, size: u32) -> svg::Svg<'static> {
+    svg(icon.handle())
+        .width(size)
+        .height(size)
+        .style(|theme: &iced::Theme, _| svg::Style {
+            color: Some(theme.palette().text),
+        })
+}
+
 pub(super) fn icon_button<'a>(
     icon: Icon,
     label: impl Into<std::borrow::Cow<'a, str>>,
@@ -238,6 +247,74 @@ mod tests {
 
     #[test]
     #[ignore = "requires a working graphics adapter"]
+    fn unified_layer_rows_select_images_and_effects_and_toggle_effect_visibility() {
+        use crate::designer::Draft;
+        use crate::ui::designer_ui::{DesignEffect, DesignerMessage, DesignerSelection};
+
+        let renderer = renderer();
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let (mut app, _) = App::new(
+            Library::open(Some(temporary.path().join("library"))).unwrap(),
+            Default::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        app.designer.draft = Some(std::sync::Arc::new(Draft::from_image(&source).unwrap()));
+
+        for (point, selection) in [
+            (
+                Point::new(120., 60.),
+                DesignerSelection::Effect(DesignEffect::Vignette),
+            ),
+            (Point::new(120., 225.), DesignerSelection::Color),
+            (Point::new(120., 270.), DesignerSelection::Image),
+        ] {
+            let messages = click(
+                app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+                &renderer,
+                point,
+            );
+            assert_eq!(messages.len(), 1);
+            for message in messages {
+                let _ = app.update(message);
+            }
+            assert_eq!(app.designer.selection, selection);
+            assert!(app.designer.draft.as_ref().unwrap().layers.is_none());
+        }
+        let messages = click(
+            app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+            &renderer,
+            Point::new(10., 60.),
+        );
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::Designer(DesignerMessage::Toggle(
+                DesignEffect::Vignette,
+                false
+            ))]
+        ));
+        app.busy = true;
+        for point in [
+            Point::new(120., 60.),
+            Point::new(10., 60.),
+            Point::new(120., 270.),
+        ] {
+            assert!(
+                click(
+                    app.designer_layers_view(app.designer.draft.as_ref().unwrap()),
+                    &renderer,
+                    point
+                )
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a working graphics adapter"]
     fn add_image_icon_keeps_the_layer_import_target_and_limits() {
         use crate::designer::Draft;
         use crate::layers::ImportTarget;
@@ -261,7 +338,12 @@ mod tests {
                 .as_mut()
                 .unwrap();
             stack.layers.resize(layer_count, stack.layers[0].clone());
-            let messages = click(app.designer_view(), &renderer, Point::new(866., 128.));
+            let draft = app.designer.draft.as_ref().unwrap();
+            let messages = click(
+                app.designer_layers_view(draft),
+                &renderer,
+                Point::new(882., 18.),
+            );
             assert_eq!(messages.len(), usize::from(!busy && layer_count < 6));
             assert!(messages.iter().all(|message| matches!(
                 message,
