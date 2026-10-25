@@ -432,11 +432,17 @@ impl Compiler<'_> {
                         format!("{} * {}", v(a), v(b))
                     }
                     Op::Sin { input } => format!("sin({})", v(input)),
-                    Op::Parallax { uv, strength } => format!(
-                        "{} + (globals.mouse - vec2<f32>(0.5)) * {}",
-                        v(uv),
-                        v(strength)
-                    ),
+                    Op::Parallax { uv, strength } => {
+                        // Reserve enough source area for the full pointer range without stretching edge texels.
+                        source.push_str(&format!(
+                            "let parallax_strength = {};\nlet parallax_margin = abs(parallax_strength) * 0.5;\n",
+                            v(strength)
+                        ));
+                        format!(
+                            "({} + vec2<f32>(parallax_margin) + (clamp(globals.mouse, vec2<f32>(0.0), vec2<f32>(1.0)) - vec2<f32>(0.5)) * parallax_strength) / (1.0 + abs(parallax_strength))",
+                            v(uv)
+                        )
+                    }
                     Op::Image { asset, uv } => sample(&self.asset_ids[asset], &v(uv)),
                     Op::Brightness { color, amount } => format!(
                         "vec4<f32>({}.rgb * {}, {}.a)",

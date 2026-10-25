@@ -34,8 +34,11 @@ as the workspace resizes. Image/project paths and replacement actions are under
 | Dreamy focus | Mouse parallax, soft blur, vignette | 3 |
 | Breathing light | Animated brightness, vignette | 1 |
 
-Effects can be combined independently. Sliders control mouse movement strength,
-light variation, animation speed, brightness, contrast, edge darkening, and softness.
+Parallax reserves a small crop proportional to its strength so moving the pointer
+to an image corner never stretches the source edges. Zero strength preserves the
+full image. Effects can be combined independently. Sliders control mouse movement
+strength, light variation, animation speed, brightness, contrast, edge darkening,
+and softness.
 Only controls used by enabled effects are exposed in the exported wallpaper.
 Their current values become package defaults; library users can change them per monitor.
 Choosing another preset resets effect controls while retaining the name and author.

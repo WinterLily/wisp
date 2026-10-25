@@ -98,7 +98,7 @@ WGSL `vec4<f32>`. There are no implicit scalar/vector or color/vector conversion
 | `add`, `multiply` | `a`, `b`: same floating scalar/vector/color type | Component-wise operation |
 | `sin` | `input`: Float | Float |
 | `translate` | `uv`, `offset`: Vector2 | Vector2; UV plus offset |
-| `parallax` | `uv`: Vector2, `strength`: Float | Vector2; UV plus `(mouse - 0.5) * strength` |
+| `parallax` | `uv`: Vector2, `strength`: Float | Vector2; mouse pan with strength-dependent overscan to keep UVs inside the source image |
 | `image` | `asset`: asset ID, `uv`: Vector2 | Color; linear RGB from the sRGB image |
 | `brightness` | `color`: Color, `amount`: Float | Color; multiply RGB, preserve alpha |
 | `contrast` | `color`: Color, `amount`: Float | Color; scale RGB around linear 0.5, preserve alpha |
