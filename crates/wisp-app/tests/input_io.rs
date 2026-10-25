@@ -1,7 +1,22 @@
 use std::fs;
-use wisp_app::{designer::Draft, library::Library};
+use wisp_app::designer::Draft;
+#[cfg(unix)]
+use wisp_app::library::Library;
 use wisp_format::{Package, PackageLimits};
 use wisp_host::Config;
+
+#[test]
+fn source_image_reads_preserve_bytes_without_the_runtime_size_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.png");
+    let bytes = vec![42; 32 * 1024 * 1024 + 1];
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(wisp_compiler::read_source_image(&path).unwrap(), bytes);
+    fs::write(&path, []).unwrap();
+    assert!(wisp_compiler::read_source_image(&path).unwrap().is_empty());
+    assert!(wisp_compiler::read_source_image(directory.path()).is_err());
+    assert!(wisp_compiler::read_source_image(&path.with_extension("missing")).is_err());
+}
 
 #[test]
 fn package_and_assignment_loaders_preserve_file_limits_and_context() {
@@ -63,6 +78,8 @@ fn special_inputs_are_rejected_by_every_loader_before_deadline() {
         ("graph", "project.json"),
         ("designer", "designer.json"),
         ("compiler", "project.json"),
+        ("source_image", "source.png"),
+        ("designer_image", "source.png"),
     ] {
         let root = directory.path().join(scenario);
         fs::create_dir(&root).unwrap();
@@ -119,6 +136,8 @@ fn fifo_loader_child() {
         "graph" => wisp_app::graph::Document::open(root).map(|_| ()),
         "designer" => Draft::open_project(root).map(|_| ()),
         "compiler" => wisp_compiler::compile_project(root, &Default::default()).map(|_| ()),
+        "source_image" => wisp_compiler::read_source_image(&root.join("source.png")).map(|_| ()),
+        "designer_image" => Draft::from_image(&root.join("source.png")).map(|_| ()),
         _ => panic!("unknown FIFO scenario"),
     };
     let error = format!("{:#}", result.unwrap_err());
