@@ -191,8 +191,8 @@ archive round trips, limits, image validation, CLI export protection, and projec
 path containment. GPU tests compare the fused result with handwritten WGSL,
 compare blur with a CPU kernel including intermediate quantization, and verify
 materialized multi-image composition, parameter slot pruning, and live updates.
-CI includes compiler GPU tests and uses the same generated graph packages for
-Linux Vulkan / Windows DirectX 12 snapshot comparisons.
+The same generated graph packages can be used for manual Linux Vulkan / Windows
+DirectX 12 snapshot comparisons.
 
 Later compiler work includes constant folding, common-expression/sample
 elimination, automatic caching, render-target reuse, relative dimensions, HDR,

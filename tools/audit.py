@@ -593,7 +593,7 @@ class Audit:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, epilog=(
-        "Run from an interactive desktop with --compositor niri, or use headless Sway in CI. "
+        "Run from an interactive desktop with --compositor niri, or use headless Sway. "
         "Fresh state, screenshots, command files and JSON results live in a new run directory. "
         "No existing daemon, desktop assignment or user config is controlled."
     ))

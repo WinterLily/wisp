@@ -17,15 +17,15 @@ Vulkan driver are required. Mesa software Vulkan is sufficient. The runner
 defaults to `WGPU_BACKEND=vulkan`; set it explicitly to test another supported
 backend. The native renderer still needs a GPU or software implementation.
 
-Headless CI uses Sway with the wlroots headless backend and Pixman compositor:
+For a headless audit, use Sway with the wlroots headless backend and Pixman compositor:
 
 ```sh
-python3 tools/audit.py --compositor sway --integration-tests --output-dir agents/ci-audit
+python3 tools/audit.py --compositor sway --integration-tests --output-dir agents/headless-audit
 ```
 
 Install `sway`, `grim`, `wtype`, Mesa Vulkan/EGL drivers and the project's native
 build dependencies on Linux. `xvfb-run -a python3 tools/audit.py --compositor sway
---output-dir agents/ci-audit` can be used on environments that require an X11
+--output-dir agents/headless-audit` can be used on environments that require an X11
 display during graphics initialization; Sway itself still uses its disposable
 headless backend. Do not run Sway as root. No display manager, user's Sway
 configuration, or physical monitor is needed.
@@ -40,8 +40,8 @@ Each invocation creates a fresh `run-*` directory below `--output-dir`. It
 contains private XDG directories, per-workflow libraries, compositor config,
 scripts, projects, packages, logs, PNG captures, `events.jsonl`, daemon status
 checkpoints, and `result.json`. Existing output is never reused. The final JSON
-and process exit code agree on success. Upload the whole run directory on CI
-failure. `agents/` is ignored by Git.
+and process exit code agree on success. Retain the whole run directory when
+investigating a failure. `agents/` is ignored by Git.
 
 All child commands use argument arrays and run in owned process groups. Every
 command has a deadline; a 600-second overall deadline bounds the default run.
@@ -120,7 +120,7 @@ python3 -m unittest discover -s tools -p 'test_audit.py' -v
 
 Pass `--integration-tests` to run the independent Rust daemon integration test
 inside the runner's disposable desktop, using the same target directory and
-profile as `--bin-dir`. CI enables this option. The test also needs built `wispd`;
+profile as `--bin-dir`. The test also needs built `wispd`;
 do not invoke it against an everyday desktop:
 
 ```sh
@@ -130,9 +130,14 @@ cargo test -p wisp --test daemon -- --ignored
 ## Native Windows
 
 The Python compositor runner is Linux-specific. Windows native output/daemon
-and audio-loopback checks require a dedicated, quiet, interactive desktop runner
-with Explorer running and an available audio output device. A GitHub-hosted
-service session is insufficient for these desktop and loopback checks. Use the
-repository's opt-in `windows_desktop` workflow dispatch on a self-hosted runner
-labelled `Windows` and `wisp-desktop`; inspect the desktop evidence from that run.
+and audio-loopback checks require a quiet, interactive Windows desktop with
+Explorer running and an available audio output device. Run them manually:
+
+```powershell
+cargo build --locked --workspace
+cargo test --locked -p wisp-host-windows -- --ignored
+cargo test --locked -p wisp --test daemon -- --ignored
+cargo test --locked -p wisp-audio --test loopback_windows -- --ignored
+```
+
 Cross-compilation and CPU tests alone do not establish native Windows behavior.

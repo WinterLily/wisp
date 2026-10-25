@@ -154,12 +154,11 @@ desktop. It does not prove visible GPU presentation. Manually verify on Windows:
 4. Explorer restart restoring surfaces; Ctrl+C releasing them; sleep/wake and lock/unlock.
 5. Traditional and raised Explorer desktop layouts, including Show Desktop.
 
-CI now builds one set of version 1–4 `.wisp` fixtures, transfers those exact files
-to Linux Vulkan and Windows DirectX 12 jobs, validates them with `wispd --check`,
-and renders deterministic 321 × 181 snapshots at time 3. A comparison job allows
-at most 3/255 channel error and mean error 0.25/255, including alpha. It also runs
-the existing GPU suite on DirectX 12. CI has been configured but has not been run
-remotely; hosted-runner GPU availability may require a Windows graphics runner.
+For manual cross-platform validation, build one set of version 1–4 `.wisp`
+fixtures and use those exact files on Linux Vulkan and Windows DirectX 12.
+Validate them with `wispd --check` and render deterministic 321 × 181 snapshots
+at time 3. The comparison tool allows at most 3/255 channel error and mean error
+0.25/255, including alpha. The GPU suite can also be run manually on DirectX 12.
 
 Local Vulkan/OpenGL snapshots can be compared with the same tool:
 

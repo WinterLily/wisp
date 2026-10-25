@@ -176,8 +176,8 @@ and OpenGL differed by at most 1/255 per channel. The layered wallpaper presente
 120 frames in nested Niri on both backends. Iced window smoke tests rendered 24
 frames on each backend, and the Vulkan screenshot was visually inspected.
 
-CI generates the same effect packages for Linux Vulkan and Windows DirectX 12,
-compares snapshots with the existing tolerance, runs GPU tests on both platforms,
-and captures the layer designer window. Native Windows execution, remote CI,
-physical monitor soak tests, and the earlier platform-verification gaps remain
+The same effect packages can be rendered manually on Linux Vulkan and Windows
+DirectX 12 and compared with the existing tolerance. GPU tests and layer designer
+captures can also be run locally. Native Windows execution, physical monitor
+soak tests, and the earlier platform-verification gaps remain
 unverified locally. No existing desktop assignments were changed.

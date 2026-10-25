@@ -195,5 +195,4 @@ tests for blur and compute packages, an inspected application screenshot, and th
 desktop integration test under nested Niri. An X11/Xwayland application smoke test
 also rendered twelve frames and exited cleanly. Windows all-target Clippy passes, but
 native Windows application/dialog/desktop execution, DirectX 12 parity, physical
-monitor soak tests, and Rust 1.88 execution remain unverified. CI coverage is added;
-no remote CI run was initiated.
+monitor soak tests, and Rust 1.88 execution remained unverified at this phase.
