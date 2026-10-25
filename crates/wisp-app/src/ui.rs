@@ -1,3 +1,5 @@
+#[path = "audit_ui.rs"]
+mod audit_ui;
 #[path = "designer_ui.rs"]
 mod designer_ui;
 #[path = "graph_canvas.rs"]
@@ -58,6 +60,8 @@ pub struct LaunchOptions {
     pub check: bool,
     pub frames: Option<u64>,
     pub screenshot: Option<PathBuf>,
+    pub screenshot_delay: Duration,
+    pub audit_commands: Option<PathBuf>,
 }
 pub fn run(mut options: LaunchOptions) -> Result<()> {
     if options.import.as_ref().is_some_and(|p| is_image(p)) {
@@ -96,6 +100,10 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         println!("Valid library: {} wallpapers", items.len());
         return Ok(());
     }
+    let audit_commands = audit_ui::load(options.audit_commands.as_deref())
+        .inspect_err(|error| eprintln!("AUDIT_FAILED: {error:#}"))?;
+    let exit_failure = Arc::new(Mutex::new(None::<String>));
+    let app_exit_failure = exit_failure.clone();
     iced::application(
         move || {
             let (mut app, task) = App::new(
@@ -106,7 +114,10 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
             );
             app.pending_design = options.create.clone();
             app.pending_graph = options.graph.clone();
-            app.screenshot = options.screenshot.clone();
+            app.final_screenshot = options.screenshot.clone();
+            app.screenshot_delay = options.screenshot_delay;
+            app.exit_failure = app_exit_failure.clone();
+            app.audit_commands = audit_commands.clone();
             (app, task)
         },
         App::update,
@@ -130,6 +141,9 @@ pub fn run(mut options: LaunchOptions) -> Result<()> {
         ..Default::default()
     })
     .run()?;
+    if let Some(error) = exit_failure.lock().unwrap().take() {
+        anyhow::bail!(error);
+    }
     Ok(())
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -174,6 +188,8 @@ enum Message {
     Import,
     Imported(Outcome<Option<Box<Item>>>),
     Export,
+    ExportChosen(Option<PathBuf>),
+    ExportTo(PathBuf),
     Exported(Outcome<bool>),
     RefreshMonitors,
     Monitors(Outcome<Vec<MonitorInfo>>),
@@ -200,6 +216,7 @@ enum Message {
     PausePreview,
     Tick(Instant),
     Poll,
+    AuditPoll,
     DaemonStatus(Outcome<bool>),
     Event(iced::Event),
     Screenshot(iced::window::Screenshot),
@@ -254,8 +271,16 @@ struct App {
     focused: bool,
     last_tick: Instant,
     frame_limit: Option<u64>,
-    screenshot: Option<PathBuf>,
+    final_screenshot: Option<PathBuf>,
     started: Instant,
+    screenshot_delay: Duration,
+    active_capture: Option<audit_ui::Capture>,
+    startup_error: Option<String>,
+    capture_operation_errors: BTreeMap<audit_ui::CaptureOperation, String>,
+    exit_failure: Arc<Mutex<Option<String>>>,
+    audit_commands: std::collections::VecDeque<audit_ui::Command>,
+    audit_wait_until: Option<Instant>,
+    audit_state_wait_started: Option<Instant>,
 }
 fn work<T: Send + 'static>(
     job: impl FnOnce() -> Result<T> + Send + 'static,
@@ -295,6 +320,10 @@ impl App {
                 .map(|c| c.audio.clone())
                 .unwrap_or_default(),
         );
+        let config_result_error = config_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"));
         let app = Self {
             audio,
             audio_devices: vec![AudioChoice {
@@ -336,8 +365,16 @@ impl App {
             focused: true,
             last_tick: Instant::now(),
             frame_limit: frames,
-            screenshot: None,
+            final_screenshot: None,
             started: Instant::now(),
+            screenshot_delay: Duration::from_secs(1),
+            active_capture: None,
+            startup_error: config_result_error,
+            capture_operation_errors: BTreeMap::new(),
+            exit_failure: Arc::new(Mutex::new(None)),
+            audit_commands: Default::default(),
+            audit_wait_until: None,
+            audit_state_wait_started: None,
         };
         let scan = work(
             move || {
@@ -393,7 +430,51 @@ impl App {
             Message::Loaded,
         )
     }
+    fn export_to(&mut self, path: PathBuf) -> Task<Message> {
+        let Some(key) = self.selected.clone() else {
+            self.status = "Choose a wallpaper to export".into();
+            return Task::none();
+        };
+        self.busy = true;
+        let library = self.library.clone();
+        work(
+            move || library.export(&key, &path).map(|()| true),
+            Message::Exported,
+        )
+    }
     fn update(&mut self, message: Message) -> Task<Message> {
+        use audit_ui::CaptureOperation;
+        let capture_operation = match &message {
+            Message::Scanned(Err(error)) => {
+                Some((CaptureOperation::LibraryScan, Some(error.clone())))
+            }
+            Message::Scanned(Ok((_, errors))) => Some((
+                CaptureOperation::LibraryScan,
+                (!errors.is_empty()).then(|| errors.join("; ")),
+            )),
+            Message::Loaded(result) => Some((
+                CaptureOperation::LibraryLoad,
+                result.as_ref().err().cloned(),
+            )),
+            Message::Designer(DesignerMessage::Opened(Err(error))) => {
+                Some((CaptureOperation::Designer, Some(error.clone())))
+            }
+            Message::Designer(DesignerMessage::Compiled(result)) => {
+                Some((CaptureOperation::Designer, result.as_ref().err().cloned()))
+            }
+            Message::Graph(graph_ui::GraphMessage::Opened(Err(error))) => {
+                Some((CaptureOperation::Graph, Some(error.clone())))
+            }
+            Message::Graph(graph_ui::GraphMessage::Compiled(revision, result))
+                if *revision == self.graph.revision =>
+            {
+                Some((CaptureOperation::Graph, result.as_ref().err().cloned()))
+            }
+            _ => None,
+        };
+        if let Some((operation, error)) = capture_operation {
+            self.record_capture_operation(operation, error);
+        }
         match message {
             Message::Graph(message) => return self.graph_update(message),
             Message::Designer(message) => return self.designer_update(message),
@@ -532,32 +613,29 @@ impl App {
                     Err(error) => self.status = format!("Import failed: {error}"),
                 }
             }
-            Message::Export if !self.busy => {
-                if let Some(key) = self.selected.clone() {
-                    self.busy = true;
-                    let library = self.library.clone();
-                    return Task::perform(
-                        async move {
-                            let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_title("Export wallpaper")
-                                .add_filter("Wisp wallpaper", &["wisp"])
-                                .set_file_name("wallpaper.wisp")
-                                .save_file()
-                                .await
-                            else {
-                                return Ok(false);
-                            };
-                            let path = file.path().to_owned();
-                            tokio::task::spawn_blocking(move || library.export(&key, &path))
-                                .await
-                                .map_err(|e| e.to_string())?
-                                .map(|()| true)
-                                .map_err(|e| format!("{e:#}"))
-                        },
-                        Message::Exported,
-                    );
-                }
+            Message::Export if !self.busy && self.selected.is_some() => {
+                self.busy = true;
+                return Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Export wallpaper")
+                            .add_filter("Wisp wallpaper", &["wisp"])
+                            .set_file_name("wallpaper.wisp")
+                            .save_file()
+                            .await
+                            .map(|file| file.path().to_owned())
+                    },
+                    Message::ExportChosen,
+                );
             }
+            Message::ExportChosen(path) => {
+                self.busy = false;
+                if let Some(path) = path {
+                    return self.export_to(path);
+                }
+                self.status = "Export cancelled".into();
+            }
+            Message::ExportTo(path) if !self.busy => return self.export_to(path),
             Message::Exported(result) => {
                 self.busy = false;
                 self.status = match result {
@@ -770,55 +848,54 @@ impl App {
                     if let Some(error) = &status.error {
                         self.status = error.clone();
                     }
-                    if self.frame_limit.is_some_and(|n| status.frames >= n) {
-                        println!("Rendered {} live preview frames", status.frames);
-                        self.frame_limit = None;
-                        if self.screenshot.is_some() {
-                            return iced::window::latest()
-                                .and_then(iced::window::screenshot)
-                                .map(Message::Screenshot);
-                        }
-                        return iced::exit();
-                    }
                 }
                 self.last_tick = now;
             }
+            Message::AuditPoll => return self.audit_poll(),
             Message::Screenshot(screenshot) => {
-                if let Some(path) = self.screenshot.take() {
-                    let result = (|| -> Result<()> {
-                        use ::image::ImageEncoder;
-                        let parent = path
-                            .parent()
-                            .filter(|p| !p.as_os_str().is_empty())
-                            .unwrap_or(std::path::Path::new("."));
-                        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-                        ::image::codecs::png::PngEncoder::new(&mut file).write_image(
-                            &screenshot.rgba,
-                            screenshot.size.width,
-                            screenshot.size.height,
-                            ::image::ExtendedColorType::Rgba8,
-                        )?;
-                        file.persist_noclobber(&path)?;
-                        Ok(())
-                    })();
-                    if let Err(error) = result {
-                        eprintln!("Could not save screenshot: {error:#}");
-                        std::process::exit(1);
-                    }
-                    println!("Saved application screenshot: {}", path.display());
+                let Some(capture) = self.active_capture.take() else {
+                    return Task::none();
+                };
+                if capture.completion != audit_ui::CaptureCompletion::Checkpoint
+                    && let Some(error) = self.capture_error()
+                {
+                    eprintln!("AUDIT_FAILED: {error}");
+                    *self.exit_failure.lock().unwrap() = Some(error);
                 }
-                return iced::exit();
+                let path = capture.path;
+                let result = (|| -> Result<()> {
+                    use ::image::ImageEncoder;
+                    let parent = path
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(std::path::Path::new("."));
+                    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                    ::image::codecs::png::PngEncoder::new(&mut file).write_image(
+                        &screenshot.rgba,
+                        screenshot.size.width,
+                        screenshot.size.height,
+                        ::image::ExtendedColorType::Rgba8,
+                    )?;
+                    file.persist_noclobber(&path)?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    eprintln!("AUDIT_FAILED: Could not save screenshot: {error:#}");
+                    *self.exit_failure.lock().unwrap() =
+                        Some(format!("Could not save screenshot: {error:#}"));
+                    return iced::exit();
+                }
+                println!("Saved application screenshot: {}", path.display());
+                if capture.completion == audit_ui::CaptureCompletion::Exit
+                    || self.exit_failure.lock().unwrap().is_some()
+                {
+                    return iced::exit();
+                }
             }
-            Message::Poll => {
-                if self.frame_limit.is_some() && self.started.elapsed() > Duration::from_secs(45) {
-                    eprintln!("Wisp smoke test timed out: {}", self.status);
-                    std::process::exit(1);
-                }
-                if !self.daemon_polling {
-                    self.daemon_polling = true;
-                    let library = self.library.clone();
-                    return work(move || daemon::running(&library), Message::DaemonStatus);
-                }
+            Message::Poll if !self.daemon_polling => {
+                self.daemon_polling = true;
+                let library = self.library.clone();
+                return work(move || daemon::running(&library), Message::DaemonStatus);
             }
             Message::DaemonStatus(result) => {
                 self.daemon_polling = false;
@@ -888,6 +965,14 @@ impl App {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Poll),
             iced::event::listen().map(Message::Event),
         ];
+        if self.frame_limit.is_some()
+            || self.final_screenshot.is_some()
+            || self.active_capture.is_some()
+            || !self.audit_commands.is_empty()
+        {
+            subscriptions
+                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::AuditPoll));
+        }
         if self.page == Page::Designer && self.designer.paint_pending {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(200))
@@ -898,7 +983,7 @@ impl App {
             || (self.page == Page::Designer && self.designer.preview.is_some())
             || (self.page == Page::Graph && self.graph.preview.is_some()))
             && !self.preview_paused
-            && (self.focused || self.frame_limit.is_some())
+            && (self.focused || self.frame_limit.is_some() || !self.audit_commands.is_empty())
         {
             subscriptions.push(
                 iced::time::every(Duration::from_secs_f64(

@@ -8,8 +8,6 @@ use anyhow::{Context, Result, ensure};
 pub use model::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::Read,
     path::Path,
 };
 
@@ -46,11 +44,8 @@ pub struct Package {
 impl Package {
     pub fn load(path: impl AsRef<Path>, limits: &PackageLimits) -> Result<Self> {
         let path = path.as_ref();
-        let mut bytes = Vec::new();
-        File::open(path)
-            .with_context(|| format!("could not open {}", path.display()))?
-            .take(limits.max_archive_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)?;
+        let bytes = wisp_io::read_bounded(path, limits.max_archive_bytes)
+            .with_context(|| format!("could not read package {}", path.display()))?;
         Self::from_bytes(&bytes, limits)
             .with_context(|| format!("invalid package {}", path.display()))
     }

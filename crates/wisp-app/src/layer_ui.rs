@@ -1,5 +1,5 @@
 use super::*;
-use crate::layers::Stack;
+use crate::layers::{ControlId, ImportTarget, Stack};
 use crate::painting::PaintTool;
 use iced::widget::column;
 use iced::{
@@ -18,12 +18,20 @@ pub(in crate::ui) enum LayerTab {
     Mask,
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::ui) enum MaskOption {
+    Invert,
+    Composition,
+    Effect,
+}
+
 #[derive(Clone)]
 pub(in crate::ui) enum LayerMessage {
     Tab(LayerTab),
     Enable,
     Select(usize),
-    Import(Option<(usize, bool)>),
+    Import(ImportTarget),
+    ImportPath(ImportTarget, PathBuf),
     Imported(Outcome<Option<Arc<Draft>>>),
     Name(String),
     Visible(usize, bool),
@@ -31,10 +39,10 @@ pub(in crate::ui) enum LayerMessage {
     Remove,
     Blend(wisp_ir::BlendMode),
     Effect(crate::layers::Effect),
-    Value(String, f32),
+    Value(ControlId, f32),
     Commit,
     Mask(bool),
-    MaskFlag(usize, bool),
+    MaskFlag(MaskOption, bool),
     ClearMask,
     Brush(f32),
     Tool(PaintTool),
@@ -187,6 +195,15 @@ impl App {
             return Task::none();
         }
         match message {
+            ImportPath(target, path) => {
+                if let Some(draft) = self.designer.draft.clone() {
+                    self.busy = true;
+                    return work(
+                        move || import_image(&draft, &path, target),
+                        |result| Message::Designer(DesignerMessage::Layer(Imported(result))),
+                    );
+                }
+            }
             Import(target) => {
                 if let Some(draft) = self.designer.draft.clone() {
                     self.busy = true;
@@ -202,9 +219,7 @@ impl App {
                             };
                             let path = file.path().to_owned();
                             tokio::task::spawn_blocking(move || -> Result<_> {
-                                let mut draft = (*draft).clone();
-                                draft.enable_layers().import(&path, target)?;
-                                Ok(Some(Arc::new(draft)))
+                                import_image(&draft, &path, target)
                             })
                             .await
                             .map_err(|e| e.to_string())?
@@ -228,6 +243,16 @@ impl App {
                 }
             }
             Select(index) => {
+                if self
+                    .designer
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.layers.as_ref())
+                    .is_none_or(|stack| index >= stack.layers.len())
+                {
+                    self.status = "Could not select missing layer".into();
+                    return Task::none();
+                }
                 self.designer.layer = index;
                 self.refresh_painter();
             }
@@ -373,7 +398,7 @@ impl App {
                             }
                         }
                         Value(id, v) => {
-                            stack.layers[i].set_value(&id, v)?;
+                            stack.layers[i].set_value(id, v)?;
                             compile = false;
                         }
                         Mask(white) => stack.blank_mask(i, white)?,
@@ -384,9 +409,9 @@ impl App {
                         MaskFlag(flag, v) => {
                             if let Some(m) = &mut stack.layers[i].mask {
                                 match flag {
-                                    0 => m.invert = v,
-                                    1 => m.composition = v,
-                                    _ => m.effect = v,
+                                    MaskOption::Invert => m.invert = v,
+                                    MaskOption::Composition => m.composition = v,
+                                    MaskOption::Effect => m.effect = v,
                                 }
                             }
                         }
@@ -424,7 +449,8 @@ impl App {
                 icon_button(
                     Icon::Create,
                     "Add image layer",
-                    (enabled && stack.layers.len() < 6).then_some(action(Import(None))),
+                    (enabled && stack.layers.len() < 6)
+                        .then_some(action(Import(ImportTarget::Layer))),
                     false
                 )
             ]
@@ -515,10 +541,10 @@ impl App {
         }
         for c in crate::layers::CONTROLS {
             let transform =
-                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&c.0);
+                ["opacity", "x", "y", "sx", "sy", "rotation", "px", "py"].contains(&c.key);
             if (tab == LayerTab::Adjust && !transform)
-                || (tab == LayerTab::Motion && (transform || c.0 == "feather"))
-                || (tab == LayerTab::Mask && c.0 != "feather")
+                || (tab == LayerTab::Motion && (transform || c.key == "feather"))
+                || (tab == LayerTab::Mask && c.key != "feather")
             {
                 continue;
             }
@@ -528,10 +554,10 @@ impl App {
                     | crate::layers::Effect::Rain
                     | crate::layers::Effect::Ripples
             );
-            if (c.0 == "feather" && l.mask.is_none())
-                || (["density", "size", "size_x", "size_y"].contains(&c.0) && !weather)
-                || (c.0 == "rain_direction" && l.effect != crate::layers::Effect::Rain)
-                || (["direction", "amplitude", "frequency"].contains(&c.0)
+            if (c.key == "feather" && l.mask.is_none())
+                || (["density", "size", "size_x", "size_y"].contains(&c.key) && !weather)
+                || (c.key == "rain_direction" && l.effect != crate::layers::Effect::Rain)
+                || (["direction", "amplitude", "frequency"].contains(&c.key)
                     && !matches!(
                         l.effect,
                         crate::layers::Effect::Hair
@@ -539,12 +565,12 @@ impl App {
                             | crate::layers::Effect::Wave
                             | crate::layers::Effect::Warp
                     ))
-                || (c.0 == "speed"
+                || (c.key == "speed"
                     && matches!(
                         l.effect,
                         crate::layers::Effect::None | crate::layers::Effect::Displacement
                     ))
-                || (c.0 == "strength"
+                || (c.key == "strength"
                     && !weather
                     && l.effect != crate::layers::Effect::Displacement)
             {
@@ -553,26 +579,25 @@ impl App {
             panel = panel.push(
                 column![
                     row![
-                        text(c.1).size(12),
+                        text(c.label).size(12),
                         space().width(Fill),
-                        text(format!("{:.2}", l.value(c.0))).size(12)
+                        text(format!("{:.2}", l.value(c.id))).size(12)
                     ]
                     .spacing(8),
-                    slider(c.2..=c.3, l.value(c.0), move |v| action(Value(
-                        c.0.into(),
-                        v
+                    slider(c.min..=c.max, l.value(c.id), move |v| action(Value(
+                        c.id, v
                     )))
-                    .step((c.3 - c.2) / 200.)
+                    .step((c.max - c.min) / 200.)
                     .on_release(action(Commit)),
                 ]
                 .spacing(7),
             );
         }
         if tab == LayerTab::Motion && l.effect == crate::layers::Effect::Displacement {
-            panel = panel.push(
-                button("Choose displacement map…")
-                    .on_press_maybe(enabled.then_some(action(Import(Some((i, true)))))),
-            );
+            panel =
+                panel.push(button("Choose displacement map…").on_press_maybe(
+                    enabled.then_some(action(Import(ImportTarget::Displacement(i)))),
+                ));
         }
         if tab == LayerTab::Mask {
             panel = panel.push(text("Paint where this layer moves or appears.").size(13));
@@ -587,17 +612,17 @@ impl App {
                     .push(
                         checkbox(m.invert)
                             .label("Invert")
-                            .on_toggle(move |v| action(MaskFlag(0, v))),
+                            .on_toggle(move |v| action(MaskFlag(MaskOption::Invert, v))),
                     )
                     .push(
                         checkbox(m.composition)
                             .label("Affect layer opacity")
-                            .on_toggle(move |v| action(MaskFlag(1, v))),
+                            .on_toggle(move |v| action(MaskFlag(MaskOption::Composition, v))),
                     )
                     .push(
                         checkbox(m.effect)
                             .label("Affect motion strength")
-                            .on_toggle(move |v| action(MaskFlag(2, v))),
+                            .on_toggle(move |v| action(MaskFlag(MaskOption::Effect, v))),
                     )
                     .push(
                         button("Fill white").on_press_maybe(enabled.then_some(action(Mask(true)))),
@@ -620,7 +645,7 @@ impl App {
             panel = panel
                 .push(
                     button("Import mask…")
-                        .on_press_maybe(enabled.then_some(action(Import(Some((i, false)))))),
+                        .on_press_maybe(enabled.then_some(action(Import(ImportTarget::Mask(i))))),
                 )
                 .push(text("White reveals · Black anchors").size(11));
         }
@@ -1350,7 +1375,7 @@ mod live_paint_tests {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("regions.png");
         ::image::RgbaImage::from_fn(100, 50, |x, _| {
-            ::image::Rgba([if x < 30 || x >= 70 { 180 } else { 20 }, 40, 60, 255])
+            ::image::Rgba([if !(30..70).contains(&x) { 180 } else { 20 }, 40, 60, 255])
         })
         .save(&source)
         .unwrap();
@@ -1833,5 +1858,77 @@ mod live_paint_tests {
                 .is_some()
         );
         assert_eq!(state.last, Some([0.25, 0.25]));
+    }
+}
+
+fn import_image(
+    draft: &Draft,
+    path: &std::path::Path,
+    target: ImportTarget,
+) -> Result<Option<Arc<Draft>>> {
+    let mut draft = draft.clone();
+    draft.enable_layers().import(path, target)?;
+    Ok(Some(Arc::new(draft)))
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    #[test]
+    fn invalid_layer_selection_preserves_a_valid_target_for_subsequent_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let mut draft = Draft::from_image(&source).unwrap();
+        draft.enable_layers();
+        let (mut app, _) = App::new(
+            Library::open(Some(dir.path().join("library"))).unwrap(),
+            Settings::default(),
+            None,
+            None,
+        );
+        app.busy = false;
+        app.designer.draft = Some(Arc::new(draft));
+        let _ = app.layer_update(LayerMessage::Select(usize::MAX));
+        assert_eq!(app.designer.layer, 0);
+        assert!(app.status.contains("missing layer"));
+        let _ = app.layer_update(LayerMessage::Value(ControlId::PositionX, 0.2));
+        assert_eq!(
+            app.designer
+                .draft
+                .as_ref()
+                .unwrap()
+                .layers
+                .as_ref()
+                .unwrap()
+                .layers[0]
+                .position[0],
+            0.2
+        );
+    }
+    #[test]
+    fn path_imports_use_named_targets_and_preserve_the_source_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let draft = Draft::from_image(&source).unwrap();
+        let layered = import_image(&draft, &source, ImportTarget::Layer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(layered.layers.as_ref().unwrap().layers.len(), 2);
+        assert!(draft.layers.is_none());
+        let masked = import_image(&layered, &source, ImportTarget::Mask(1))
+            .unwrap()
+            .unwrap();
+        let displaced = import_image(&masked, &source, ImportTarget::Displacement(1))
+            .unwrap()
+            .unwrap();
+        let layer = &displaced.layers.as_ref().unwrap().layers[1];
+        assert!(layer.mask.is_some() && layer.displacement.is_some());
+        assert!(import_image(&displaced, &source, ImportTarget::Mask(100)).is_err());
+        assert_eq!(displaced.layers.as_ref().unwrap().layers.len(), 2);
+        assert!(
+            import_image(&displaced, &dir.path().join("missing"), ImportTarget::Layer).is_err()
+        );
     }
 }

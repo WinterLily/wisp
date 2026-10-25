@@ -323,18 +323,42 @@ fn rejects_conflicting_local_headers_overlaps_and_actual_decompression_overruns(
         .contains("byte limit exceeded")
     );
 
-    // Two distinct directory entries pointing at the same local header must fail.
-    let mut overlapping = bytes;
+    let mut overlapping = zip(
+        &[("first".into(), vec![1; 8]), ("second".into(), vec![2; 8])].into(),
+        CompressionMethod::Stored,
+    );
     let positions: Vec<_> = overlapping
         .windows(4)
         .enumerate()
         .filter_map(|(i, value)| (value == b"PK\x01\x02").then_some(i))
         .collect();
-    let first_offset: [u8; 4] = overlapping[positions[0] + 42..positions[0] + 46]
-        .try_into()
-        .unwrap();
-    overlapping[positions[1] + 42..positions[1] + 46].copy_from_slice(&first_offset);
-    assert!(Package::from_bytes(&overlapping, &PackageLimits::default()).is_err());
+    let local_offset = |central: usize| {
+        u32::from_le_bytes(overlapping[central + 42..central + 46].try_into().unwrap()) as usize
+    };
+    let first_header = local_offset(positions[0]);
+    let second_header = local_offset(positions[1]);
+    let name_length = u16::from_le_bytes(
+        overlapping[first_header + 26..first_header + 28]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let extra_length = u16::from_le_bytes(
+        overlapping[first_header + 28..first_header + 30]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let data_start = first_header + 30 + name_length + extra_length;
+    let overlapping_size = (second_header + 1 - data_start) as u32;
+    // Matching headers ensure the fixture reaches the interval-overlap check.
+    for offset in [
+        first_header + 18,
+        first_header + 22,
+        positions[0] + 20,
+        positions[0] + 24,
+    ] {
+        overlapping[offset..offset + 4].copy_from_slice(&overlapping_size.to_le_bytes());
+    }
+    assert!(error(&overlapping, &PackageLimits::default()).contains("overlapping ZIP entries"));
 }
 
 #[test]

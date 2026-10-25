@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -84,18 +84,66 @@ struct Args {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    let mut data = Vec::new();
-    File::open(path)
-        .with_context(|| format!("could not open {}", path.display()))?
-        .take(limit + 1)
-        .read_to_end(&mut data)?;
-    ensure!(
-        data.len() as u64 <= limit,
-        "{} exceeds its {} byte input limit",
-        path.display(),
-        limit
-    );
-    Ok(data)
+    wisp_io::read_bounded(path, limit)
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn shader_input_obeys_exact_and_exceeded_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shader.wgsl");
+        std::fs::write(&path, b"shader").unwrap();
+        assert_eq!(read_bounded(&path, 6).unwrap(), b"shader");
+        assert!(read_bounded(&path, 5).is_err());
+        assert!(read_bounded(directory.path(), 100).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_shader_input_is_rejected_before_deadline() {
+        use std::{process::Command, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shader.wgsl");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "input_tests::fifo_shader_child", "--nocapture"])
+            .env("WISP_SHADER_FIFO_PATH", &path)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("shader input blocked on FIFO");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_shader_child() {
+        let Some(path) = std::env::var_os("WISP_SHADER_FIFO_PATH") else {
+            return;
+        };
+        let error = read_bounded(Path::new(&path), 1024 * 1024).unwrap_err();
+        assert!(error.to_string().contains("regular file"));
+    }
 }
 
 fn main() -> Result<()> {

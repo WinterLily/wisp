@@ -8,7 +8,7 @@ fn wisp_transform(uv: vec2<f32>, position: vec2<f32>, scale: vec2<f32>, angle: f
     let c = cos(angle); let s = sin(angle);
     return vec2<f32>(c * p.x + s * p.y, -s * p.x + c * p.y) / max(abs(scale), vec2<f32>(0.001)) + pivot;
 }
-// Straight-alpha source-over with separable blend functions in linear RGB.
+// Linear RGB blending avoids dark fringes around translucent layer edges.
 fn wisp_blend(back: vec4<f32>, front: vec4<f32>, mode: u32) -> vec4<f32> {
     let ab = clamp(back.a, 0.0, 1.0); let af = clamp(front.a, 0.0, 1.0);
     var mixed = front.rgb;
@@ -29,7 +29,6 @@ fn wisp_hash(cell: vec2<i32>) -> f32 {
     h = h ^ (h >> 13u);
     return f32(h & 65535u) / 65535.0;
 }
-// A water cap: surface slopes, optical thickness and antialiased coverage.
 // Irregular ellipses and a tapered shoulder avoid uniform outlined circles.
 fn wisp_water_cap(d: vec2<f32>, radius: f32, elongation: f32, seed: f32) -> vec4<f32> {
     let stretch = vec2<f32>(0.82 + seed * 0.3, elongation);
@@ -42,11 +41,11 @@ fn wisp_water_cap(d: vec2<f32>, radius: f32, elongation: f32, seed: f32) -> vec4
     let slope = q / (stretch * vec2<f32>(shoulder, 1.0)) * 0.72 / max(cap, 0.22);
     return vec4<f32>(slope * coverage, cap * radius * 0.65 * coverage, coverage);
 }
-// Log-like size distribution: pinprick beads through occasional large drops.
+// Bias toward small beads so occasional large drops do not dominate the surface.
 fn wisp_water_size(seed: f32) -> f32 {
     return mix(0.10, 1.40, pow(seed, 1.5));
 }
-// Short wet tracks carry curved normals into the existing specular lighting.
+// Curved track normals keep wet streaks consistent with droplet highlights.
 fn wisp_water_track(d: vec2<f32>, radius: f32, shape: vec2<f32>, seed: f32, activity: f32) -> vec4<f32> {
     let behind = -d.y;
     let length = min(0.85, 0.20 + radius * shape.y * 2.0);
@@ -125,7 +124,7 @@ fn wisp_weather(uv: vec2<f32>, density: f32, size: f32, speed: f32, kind: u32, d
 fn wisp_water_light(normal: vec3<f32>, coverage: f32) -> vec4<f32> {
     let reflection = reflect(vec3<f32>(0.0, 0.0, -1.0), normal);
     let fresnel = 0.0204 + 0.9796 * pow(1.0 - max(normal.z, 0.0), 5.0);
-    // Broad sky reflection plus a rectangular window and two small light sources.
+    // A few distinct reflection shapes make the curved water surface readable.
     let sky = mix(vec3<f32>(0.07, 0.09, 0.12), vec3<f32>(0.45, 0.58, 0.7), clamp(-reflection.y * 0.5 + 0.5, 0.0, 1.0));
     let window_x = 1.0 - smoothstep(0.13, 0.19, abs(reflection.x + 0.38));
     let window_y = 1.0 - smoothstep(0.28, 0.38, abs(reflection.y + 0.34));

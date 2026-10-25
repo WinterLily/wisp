@@ -3,12 +3,13 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::Read,
     path::{Path, PathBuf},
 };
 use wisp_format::{Package, PackageLimits, ParameterValue};
 use wisp_runtime::Wallpaper;
+
+pub mod reconciliation;
+pub mod status;
 
 pub struct Options {
     pub config: Config,
@@ -16,6 +17,8 @@ pub struct Options {
     pub list_outputs: bool,
     pub json: bool,
     pub frames: Option<u64>,
+    pub status_path: Option<PathBuf>,
+    pub stop_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -74,14 +77,8 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 1024 * 1024,
-            "assignment config exceeds 1 MiB"
-        );
+        let bytes = wisp_io::read_bounded(path, 1024 * 1024)
+            .context("could not read assignment config (maximum 1 MiB)")?;
         let mut config: Self =
             serde_json::from_slice(&bytes).context("invalid assignment config")?;
         ensure!(config.outputs.len() <= 64, "too many output assignments");

@@ -3,23 +3,11 @@
 use crate::Asset;
 use anyhow::{Context, Result, ensure};
 use image::{DynamicImage, ImageFormat, ImageReader, imageops::FilterType};
-use std::{
-    fs::File,
-    io::{Cursor, Read},
-    path::Path,
-};
+use std::{io::Cursor, path::Path};
 
 /// Read a local source image without a file-size cap. Reject devices and FIFOs.
 pub fn read_source_image(path: &Path) -> Result<Vec<u8>> {
-    ensure!(
-        std::fs::metadata(path)?.is_file(),
-        "image must be a regular file"
-    );
-    let mut file = File::open(path)?;
-    ensure!(file.metadata()?.is_file(), "image must be a regular file");
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
+    wisp_io::read_bounded(path, u64::MAX)
 }
 
 /// Decode a local authoring image without fixed dimension or allocation caps.

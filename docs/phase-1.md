@@ -86,9 +86,9 @@ and the host layout against Naga's parsed WGSL layout. The explicit GPU test che
 known corner colors from a 2×2 image, an unaligned 65-pixel readback width, invalid
 snapshot dimensions, and changes from time and mouse uniforms.
 
-Windows and Linux use the same source and assets. CI includes both targets, but
-cross-platform visual parity requires running and comparing snapshots on actual
-Windows and Linux drivers; it is not established by compilation alone.
+Windows and Linux use the same source and assets. Cross-platform visual parity
+requires running and comparing snapshots on actual Windows and Linux drivers;
+it is not established by compilation alone.
 
 Initial local validation passed on Linux: CPU tests, Clippy, Vulkan pixel
 readback, a PNG snapshot, and window presentation/clean shutdown using Vulkan

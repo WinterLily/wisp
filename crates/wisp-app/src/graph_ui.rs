@@ -46,6 +46,8 @@ pub(super) enum GraphMessage {
     AssetChosen(Outcome<Option<Arc<Document>>>),
     Compiled(u64, Outcome<(Arc<Wallpaper>, String)>),
     Save(bool),
+    SaveTo(bool, PathBuf),
+    AssetPath(PathBuf),
     Saved(Outcome<bool>),
     Install,
 }
@@ -349,6 +351,21 @@ impl App {
                     |r| Message::Graph(Opened(r)),
                 );
             }
+            SaveTo(project, path) => {
+                if let Some(doc) = self.graph.document.clone() {
+                    self.busy = true;
+                    return work(
+                        move || save_to(&doc, &path, project),
+                        move |result| {
+                            if project {
+                                Message::Graph(Saved(result))
+                            } else {
+                                Message::Exported(result)
+                            }
+                        },
+                    );
+                }
+            }
             Save(project) => {
                 if let Some(doc) = self.graph.document.clone() {
                     self.busy = true;
@@ -371,17 +388,10 @@ impl App {
                                 return Ok(false);
                             };
                             let path = file.path().to_owned();
-                            tokio::task::spawn_blocking(move || {
-                                if project {
-                                    doc.save(&path)
-                                } else {
-                                    doc.export(&path)
-                                }
-                            })
-                            .await
-                            .map_err(|e| e.to_string())?
-                            .map(|_| true)
-                            .map_err(|e| format!("{e:#}"))
+                            tokio::task::spawn_blocking(move || save_to(&doc, &path, project))
+                                .await
+                                .map_err(|e| e.to_string())?
+                                .map_err(|e| format!("{e:#}"))
                         },
                         move |r| {
                             if project {
@@ -404,6 +414,15 @@ impl App {
                                 .map(|i| Some(Box::new(i)))
                         },
                         Message::Imported,
+                    );
+                }
+            }
+            AssetPath(path) => {
+                if let Some(doc) = self.graph.document.clone() {
+                    self.busy = true;
+                    return work(
+                        move || import_image(&doc, &path),
+                        |result| Message::Graph(AssetChosen(result)),
                     );
                 }
             }
@@ -735,6 +754,13 @@ impl App {
                         button("Open project…").on_press_maybe(enabled.then_some(action(Browse))),
                     ]
                     .spacing(12),
+                    text_input("Project folder", &self.import_path)
+                        .on_input(Message::ImportPath)
+                        .width(420),
+                    button("Open path").on_press_maybe(
+                        (!self.busy && !self.import_path.trim().is_empty())
+                            .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
+                    ),
                     button("Continue from Designer").on_press_maybe(
                         (enabled && self.designer.draft.is_some()).then_some(action(FromEasy))
                     ),
@@ -1039,5 +1065,43 @@ mod tests {
         assert!(app.graph.dirty);
         let _ = app.graph_update(GraphMessage::Saved(Ok(true)));
         assert!(!app.graph.dirty);
+    }
+}
+
+fn save_to(doc: &Document, path: &std::path::Path, project: bool) -> Result<bool> {
+    if project {
+        doc.save(path)?;
+    } else {
+        doc.export(path)?;
+    }
+    Ok(true)
+}
+fn import_image(doc: &Document, path: &std::path::Path) -> Result<Option<Arc<Document>>> {
+    let mut doc = doc.clone();
+    doc.import_image(path)?;
+    Ok(Some(Arc::new(doc)))
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    #[test]
+    fn path_import_and_save_preserve_editable_graph_and_recover_after_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let doc = Document::default();
+        let imported = import_image(&doc, &source).unwrap().unwrap();
+        assert_eq!(imported.assets.len(), doc.assets.len() + 1);
+        assert!(import_image(&imported, &dir.path().join("missing")).is_err());
+        let project = dir.path().join("graph");
+        let exported = dir.path().join("graph.wisp");
+        assert!(save_to(&imported, &project, true).unwrap());
+        assert!(save_to(&imported, &exported, false).unwrap());
+        let reopened = Document::open(&project).unwrap();
+        assert_eq!(reopened.graph.nodes.len(), imported.graph.nodes.len());
+        assert_eq!(reopened.assets.len(), imported.assets.len());
+        assert!(save_to(&imported, &project, true).is_err());
+        assert!(save_to(&imported, &exported, false).is_err());
     }
 }

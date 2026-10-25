@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/wisp-audio", "crates/wisp-format", "crates/wisp-ir", "crates/wisp-compiler", "apps/wispc", "crates/wisp-runtime", "apps/wisp-preview", "crates/wisp-host", "crates/wisp-host-wayland", "crates/wisp-host-windows", "apps/wispd", "crates/wisp-app", "apps/wisp"]
+members = ["crates/wisp-io", "crates/wisp-audio", "crates/wisp-format", "crates/wisp-ir", "crates/wisp-compiler", "apps/wispc", "crates/wisp-runtime", "apps/wisp-preview", "crates/wisp-host", "crates/wisp-host-wayland", "crates/wisp-host-windows", "apps/wispd", "crates/wisp-app", "apps/wisp"]
 exclude = ["vendor/iced_wgpu"]
 default-members = ["apps/wisp-preview"]
 resolver = "3"
@@ -10,6 +10,8 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
+wisp-io = { path = "crates/wisp-io" }
+libc = "0.2"
 anyhow = "1.0"
 bytemuck = { version = "1.24", features = ["derive"] }
 clap = { version = "4.5", features = ["derive"] }

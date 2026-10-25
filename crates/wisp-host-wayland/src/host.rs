@@ -31,10 +31,15 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
 };
+use wisp_host::{
+    Assignment, reconciliation,
+    status::{OutputStatus, StatusReporter},
+};
 use wisp_runtime::{Globals, Gpu, Renderer};
 
 // Declaration order deliberately releases renderer/surface before layer objects.
 struct Output {
+    instance_id: u64,
     renderer: Option<Renderer>,
     surface: wgpu::Surface<'static>,
     layer: LayerSurface,
@@ -48,7 +53,7 @@ struct Output {
     next_frame: Instant,
     last_frame: Instant,
     presented: u64,
-    fps: u32,
+    assignment: Assignment,
 }
 struct Host {
     outputs: Vec<Output>,
@@ -63,6 +68,7 @@ struct Host {
 }
 
 pub fn run(options: Options) -> Result<()> {
+    let mut reporter = StatusReporter::new(options.status_path.clone(), &options.config)?;
     let connection = Connection::connect_to_env().context("could not connect to Wayland")?;
     let (globals, mut queue) = registry_queue_init(&connection)?;
     let qh = queue.handle();
@@ -133,7 +139,13 @@ pub fn run(options: Options) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("could not register Wayland event source: {e}"))?;
     let mut modified = config_modified(&host.options.config_path);
     let mut next_reload = Instant::now() + Duration::from_secs(1);
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed)
+        && !host
+            .options
+            .stop_path
+            .as_ref()
+            .is_some_and(|path| path.exists())
+    {
         let now = Instant::now();
         if audio_config != host.options.config.audio {
             audio_config = host.options.config.audio.clone();
@@ -150,9 +162,11 @@ pub fn run(options: Options) -> Result<()> {
                 output.draw(host.gpu.as_ref().unwrap(), &qh)?;
             }
         }
+        reporter.update(true, host.output_status(), false)?;
         if host.options.frames.is_some_and(|count| {
             !host.outputs.is_empty() && host.outputs.iter().all(|o| o.presented >= count)
         }) {
+            reporter.update(true, host.output_status(), true)?;
             eprintln!(
                 "Wisp: presented requested frames on {} output(s)",
                 host.outputs.len()
@@ -166,6 +180,7 @@ pub fn run(options: Options) -> Result<()> {
                 if let Some(path) = &host.options.config_path {
                     let result =
                         Config::load(path).and_then(|config| host.reload(config, &connection, &qh));
+                    reporter.reloaded(&result, &host.options.config);
                     if let Err(error) = result {
                         eprintln!("Wisp: keeping previous assignments: {error:#}");
                     }
@@ -222,6 +237,28 @@ impl Host {
             self.outputs.len() < 16,
             "at most 16 active outputs are supported"
         );
+        let assignment = assignment.clone();
+        let prepared = self.prepare_output(connection, qh, output, assignment)?;
+        eprintln!(
+            "Wisp: assigned {} to {}",
+            prepared.assignment.package.display(),
+            prepared.name
+        );
+        self.outputs.push(prepared);
+        Ok(())
+    }
+    fn prepare_output(
+        &mut self,
+        connection: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+        assignment: Assignment,
+    ) -> Result<Output> {
+        let info = self
+            .output_state
+            .info(&output)
+            .context("output disappeared")?;
+        let name = output_name(&info);
         let wallpaper = assignment.load()?;
         let wl_surface = self.compositor.create_surface(qh);
         let region = Region::new(&self.compositor)?;
@@ -273,8 +310,8 @@ impl Host {
         let renderer = pollster::block_on(Renderer::from_wallpaper(gpu, &wallpaper, format))?;
         let now = Instant::now();
         layer.commit();
-        eprintln!("Wisp: assigned {} to {name}", assignment.package.display());
-        self.outputs.push(Output {
+        Ok(Output {
+            instance_id: wisp_host::status::next_output_identity(),
             renderer: Some(renderer),
             surface,
             layer,
@@ -288,9 +325,20 @@ impl Host {
             next_frame: now,
             last_frame: now,
             presented: 0,
-            fps: assignment.fps,
-        });
-        Ok(())
+            assignment,
+        })
+    }
+    fn output_status(&self) -> Vec<OutputStatus> {
+        self.outputs
+            .iter()
+            .map(|output| OutputStatus {
+                instance_id: output.instance_id,
+                id: output.name.clone(),
+                assignment: output.assignment.clone(),
+                initialized: output.config.is_some(),
+                presented: output.presented,
+            })
+            .collect()
     }
     fn reload(
         &mut self,
@@ -299,65 +347,37 @@ impl Host {
         qh: &QueueHandle<Self>,
     ) -> Result<()> {
         config.validate()?;
-        // Audio-only changes must not recreate renderers or erase particle/history state.
-        if self.options.config.audio_only_change(&config) {
-            self.options.config.audio = config.audio;
-            eprintln!("Wisp: reloaded audio settings; preserving wallpaper state");
-            return Ok(());
-        }
-        // Prepare every replacement before changing any running renderer.
-        let mut replacements = Vec::new();
-        for output in &self.outputs {
-            let replacement = if let Some(assignment) = config.assignment(&output.name) {
-                let wallpaper = assignment.load()?;
-                let gpu = self.gpu.as_ref().unwrap();
-                let format = output
-                    .surface
-                    .get_capabilities(&gpu.adapter)
-                    .formats
-                    .into_iter()
-                    .find(|f| {
-                        matches!(
-                            f,
-                            wgpu::TextureFormat::Rgba8UnormSrgb
-                                | wgpu::TextureFormat::Bgra8UnormSrgb
-                        )
-                    })
-                    .context("no sRGB format")?;
-                Some((
-                    pollster::block_on(Renderer::from_wallpaper(gpu, &wallpaper, format))?,
-                    assignment.fps,
-                ))
-            } else {
-                None
-            };
-            replacements.push(replacement);
-        }
-        // New output surfaces must also be prepared successfully before committing.
-        let previous = std::mem::replace(&mut self.options.config, config);
-        let previous_count = self.outputs.len();
-        for output in self.output_state.outputs().collect::<Vec<_>>() {
-            if let Err(error) = self.add_output(connection, qh, output) {
-                self.outputs.truncate(previous_count);
-                self.options.config = previous;
-                return Err(error);
-            }
-        }
-        for (output, replacement) in self.outputs.iter_mut().zip(replacements) {
-            if let Some((renderer, fps)) = replacement {
-                output.renderer = Some(renderer);
-                output.fps = fps;
-                output.globals = Globals::new(
-                    output.globals.resolution[0] as u32,
-                    output.globals.resolution[1] as u32,
-                );
-                output.last_frame = Instant::now();
-                output.next_frame = output.last_frame;
-            } else {
-                output.renderer = None;
-            }
-        }
-        self.outputs.retain(|o| o.renderer.is_some());
+        let desired: Vec<_> = self
+            .output_state
+            .outputs()
+            .filter_map(|output| {
+                let info = self.output_state.info(&output)?;
+                let assignment = config.assignment(&output_name(&info))?.clone();
+                Some((output, assignment))
+            })
+            .collect();
+        ensure!(
+            desired.len() <= 16,
+            "at most 16 active outputs are supported"
+        );
+        // Preparation needs exclusive access to the shared GPU, while old surfaces stay alive.
+        let mut outputs = std::mem::take(&mut self.outputs);
+        let mut previous = self.options.config.clone();
+        let result = reconciliation::reconcile(
+            &mut outputs,
+            &mut previous,
+            Some(config),
+            |_| Ok(desired),
+            |output, (target, assignment)| {
+                output.output == *target && output.assignment == *assignment
+            },
+            |(output, assignment)| {
+                self.prepare_output(connection, qh, output.clone(), assignment.clone())
+            },
+        );
+        self.outputs = outputs;
+        result?;
+        self.options.config = previous;
         eprintln!("Wisp: reloaded wallpaper assignments");
         Ok(())
     }
@@ -397,7 +417,8 @@ impl Output {
         Ok(())
     }
     fn draw(&mut self, gpu: &Gpu, qh: &QueueHandle<Host>) -> Result<()> {
-        self.next_frame = Instant::now() + Duration::from_secs_f64(1.0 / f64::from(self.fps));
+        self.next_frame =
+            Instant::now() + Duration::from_secs_f64(1.0 / f64::from(self.assignment.fps));
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

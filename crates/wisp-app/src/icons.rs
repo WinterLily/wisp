@@ -238,6 +238,42 @@ mod tests {
 
     #[test]
     #[ignore = "requires a working graphics adapter"]
+    fn add_image_icon_keeps_the_layer_import_target_and_limits() {
+        use crate::designer::Draft;
+        use crate::layers::ImportTarget;
+        use crate::ui::designer_ui::{DesignerMessage, DesignerPanel, layer_ui::LayerMessage};
+
+        let renderer = renderer();
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("image.png");
+        std::fs::write(&source, wisp_runtime::EXAMPLE_IMAGE).unwrap();
+        let mut draft = Draft::from_image(&source).unwrap();
+        draft.enable_layers();
+        let library = Library::open(Some(temporary.path().join("library"))).unwrap();
+        let (mut app, _) = App::new(library, Default::default(), None, None);
+        app.designer.draft = Some(std::sync::Arc::new(draft));
+        app.designer.panel = Some(DesignerPanel::Layers);
+
+        for (busy, layer_count) in [(false, 1), (true, 1), (false, 5), (false, 6)] {
+            app.busy = busy;
+            let stack = std::sync::Arc::make_mut(app.designer.draft.as_mut().unwrap())
+                .layers
+                .as_mut()
+                .unwrap();
+            stack.layers.resize(layer_count, stack.layers[0].clone());
+            let messages = click(app.designer_view(), &renderer, Point::new(866., 128.));
+            assert_eq!(messages.len(), usize::from(!busy && layer_count < 6));
+            assert!(messages.iter().all(|message| matches!(
+                message,
+                Message::Designer(DesignerMessage::Layer(LayerMessage::Import(
+                    ImportTarget::Layer
+                )))
+            )));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a working graphics adapter"]
     fn paint_tool_icons_select_each_tool_and_paint_mode() {
         let renderer = renderer();
         let temporary = tempfile::tempdir().unwrap();

@@ -769,3 +769,65 @@ fn water_refracts_lower_layers_through_a_transparent_foreground() {
     };
     assert_eq!(render(&zero.package), render(&dry.package));
 }
+
+#[test]
+#[ignore = "requires a working graphics adapter"]
+fn rejected_gpu_replacement_preserves_pixels_without_claiming_success_and_recovers() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+    let gpu = pollster::block_on(Gpu::new(&instance, None)).unwrap();
+    let compilation = wisp_compiler::compile_project(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/graph-blur"),
+        &Default::default(),
+    )
+    .unwrap();
+    let wallpaper = Arc::new(Wallpaper::from_package(&compilation.package).unwrap());
+    let mut preview = Preview {
+        generation: 1,
+        parameters: Arc::new(
+            wallpaper
+                .parameters()
+                .iter()
+                .map(|p| (p.id.clone(), p.default.clone()))
+                .collect(),
+        ),
+        wallpaper,
+        globals: Globals::new(65, 33),
+        status: Arc::new(Mutex::new(Status::default())),
+    };
+    let mut pipeline = Pipeline::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let bounds = Rectangle {
+        x: 7.,
+        y: 9.,
+        width: 65.,
+        height: 33.,
+    };
+    let original = frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.5, 0.5]);
+    assert_eq!(preview.status.lock().unwrap().rendered_generation, Some(1));
+    pipeline.runtime_limits.max_texture_dimension = 1;
+    preview.generation = 2;
+    preview.globals.time = 20.;
+    preview.status = Arc::new(Mutex::new(Status::default()));
+    for _ in 0..3 {
+        preview.globals.frame += 1;
+        assert_eq!(
+            frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.1, 0.9]),
+            original
+        );
+        let status = preview.status.lock().unwrap();
+        assert!(
+            status
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("limit"))
+        );
+        assert_eq!(status.frames, 0);
+        assert_eq!(status.rendered_generation, None);
+    }
+    pipeline.runtime_limits = Default::default();
+    preview.generation = 3;
+    frame(&gpu, &mut pipeline, preview.clone(), bounds, [0.5, 0.5]);
+    let status = preview.status.lock().unwrap();
+    assert!(status.error.is_none());
+    assert_eq!(status.frames, 1);
+    assert_eq!(status.rendered_generation, Some(3));
+}

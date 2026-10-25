@@ -6,7 +6,7 @@ use std::{
     fs::OpenOptions,
     io::Read,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 use wisp_host::MonitorInfo;
@@ -21,14 +21,17 @@ fn executable() -> Result<PathBuf> {
     Ok(path)
 }
 fn command() -> Result<Command> {
-    let mut command = Command::new(executable()?);
+    Ok(command_at(&executable()?))
+}
+fn command_at(path: &std::path::Path) -> Command {
+    let mut command = Command::new(path);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
     command.stdin(Stdio::null());
-    Ok(command)
+    command
 }
 pub fn monitors() -> Result<Vec<MonitorInfo>> {
     // Temp files avoid blocking on pipe capacity, even if discovery fails noisily.
@@ -74,18 +77,91 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
 }
 pub fn running(library: &Library) -> Result<bool> {
     let file = lock_file(&library.root.join("daemon.lock"))?;
-    match file.try_lock_exclusive() {
-        Ok(()) => Ok(false),
+    // Concurrent observers must not mistake one another for the exclusive daemon owner.
+    match FileExt::try_lock_shared(&file) {
+        Ok(()) => {
+            FileExt::unlock(&file)?;
+            Ok(false)
+        }
         Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
             Ok(true)
         }
         Err(error) => Err(error.into()),
     }
 }
-pub fn start(library: &Library) -> Result<()> {
-    if running(library)? {
-        return Ok(());
+
+fn owner_pid_path(library: &Library) -> PathBuf {
+    // Windows denies reads from a separately opened handle while the lock is held.
+    library.root.join(if cfg!(windows) {
+        "daemon.lock.pid"
+    } else {
+        "daemon.lock"
+    })
+}
+
+pub fn status(library: &Library) -> Result<Option<wisp_host::status::DaemonStatus>> {
+    let Some(_publication) =
+        wisp_host::status::StartupPublicationGate::try_observe(&library.root.join("daemon.lock"))?
+    else {
+        return Ok(None);
+    };
+    if !running(library)? {
+        return Ok(None);
     }
+    let owner = match wisp_io::read_bounded(&owner_pid_path(library), 11) {
+        Ok(owner) => owner,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    // A newline marks a complete PID publication, even if a reader sees a partial write.
+    let owner_pid = std::str::from_utf8(&owner)
+        .ok()
+        .and_then(|owner| owner.strip_suffix('\n'))
+        .and_then(|owner| owner.parse::<u32>().ok())
+        .filter(|pid| *pid != 0);
+    let Some(owner_pid) = owner_pid else {
+        return Ok(None);
+    };
+    let path = library.root.join("daemon.status.json");
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let ownership = std::fs::metadata(library.root.join("daemon.lock"))?;
+    // An acquired lock belongs to the new process before it can replace a stale ready snapshot.
+    if metadata.modified()? < ownership.modified()? {
+        return Ok(None);
+    }
+    match wisp_host::status::DaemonStatus::read(&path) {
+        Ok(status) if status.pid == owner_pid => Ok(Some(status)),
+        Ok(_) => Ok(None),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub fn ready(library: &Library) -> Result<bool> {
+    Ok(status(library)?.is_some_and(|status| status.running && status.ready))
+}
+
+fn spawn(
+    library: &Library,
+    stop_path: Option<&std::path::Path>,
+    binary: &std::path::Path,
+) -> Result<Child> {
     library.config()?.validate()?;
     if !library.config_path().exists() {
         library.save_config(&Default::default())?;
@@ -95,28 +171,344 @@ pub fn start(library: &Library) -> Result<()> {
         .truncate(true)
         .write(true)
         .open(library.root.join("daemon.log"))?;
-    let mut child = command()?
+    let mut command = command_at(binary);
+    command
         .arg("--config")
         .arg(library.config_path())
         .arg("--lock-file")
         .arg(library.root.join("daemon.lock"))
+        .arg("--status-file")
+        .arg(library.root.join("daemon.status.json"))
         .stdout(Stdio::null())
-        .stderr(log)
-        .spawn()
-        .context("could not start wallpaper daemon")?;
-    // Keep a reaper in this process without tying the daemon's lifetime to the UI.
+        .stderr(log);
+    if let Some(path) = stop_path {
+        command.arg("--stop-file").arg(path);
+    }
+    command.spawn().context("could not start wallpaper daemon")
+}
+
+fn wait_ready(library: &Library, mut child: Option<&mut Child>) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(child) = child.as_mut() {
+            ensure!(
+                child.try_wait()?.is_none(),
+                "wallpaper daemon exited before initialization; see {}",
+                library.root.join("daemon.log").display()
+            );
+        }
+        if status(library)?.is_some_and(|status| {
+            status.running
+                && status.ready
+                && child.as_ref().is_none_or(|child| child.id() == status.pid)
+        }) {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "wallpaper daemon did not initialize; see {}",
+            library.root.join("daemon.log").display()
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+pub fn start(library: &Library) -> Result<()> {
+    if running(library)? {
+        return wait_ready(library, None);
+    }
+    let mut child = spawn(library, None, &executable()?)?;
+    let result = wait_ready(library, Some(&mut child));
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    // A reaper prevents zombies while preserving the daemon when the GUI closes.
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if running(library)? {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(30));
+    result
+}
+
+/// Harnesses own their daemon's lifetime; normal GUI launches remain independent.
+pub struct OwnedDaemon {
+    child: Child,
+    stop_path: PathBuf,
+}
+impl OwnedDaemon {
+    pub fn start(library: &Library) -> Result<Self> {
+        Self::start_with_executable(library, &executable()?)
     }
-    anyhow::bail!(
-        "wallpaper daemon did not start; see {}",
-        library.root.join("daemon.log").display()
-    )
+    pub fn start_with_executable(library: &Library, binary: &std::path::Path) -> Result<Self> {
+        ensure!(!running(library)?, "cannot own an already running daemon");
+        // Separate markers ensure a losing startup race cannot stop another owner's daemon.
+        let marker = tempfile::Builder::new()
+            .prefix("daemon-")
+            .suffix(".stop")
+            .tempfile_in(&library.root)?;
+        let stop_path = marker.path().to_owned();
+        marker.close()?;
+        let mut daemon = Self {
+            child: spawn(library, Some(&stop_path), binary)?,
+            stop_path,
+        };
+        wait_ready(library, Some(&mut daemon.child))?;
+        Ok(daemon)
+    }
+    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        Ok(self.child.try_wait()?)
+    }
+    pub fn stop_path(&self) -> &std::path::Path {
+        &self.stop_path
+    }
+    pub fn stop(&mut self) -> Result<ExitStatus> {
+        if let Some(status) = self.child.try_wait()? {
+            return Ok(status);
+        }
+        std::fs::write(&self.stop_path, [])?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                self.child.kill()?;
+                return Ok(self.child.wait()?);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+impl Drop for OwnedDaemon {
+    fn drop(&mut self) {
+        if self.stop().is_err() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        let _ = std::fs::remove_file(&self.stop_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon;
+    use std::io::{Seek, Write};
+    use wisp_host::status::DaemonStatus;
+
+    fn owner_file(library: &Library, lock: &std::fs::File) -> std::fs::File {
+        if cfg!(windows) {
+            lock_file(&owner_pid_path(library)).unwrap()
+        } else {
+            lock.try_clone().unwrap()
+        }
+    }
+
+    fn publish_owner_pid(library: &Library, lock: &std::fs::File, pid: u32) {
+        let mut owner = owner_file(library, lock);
+        owner.set_len(0).unwrap();
+        owner.rewind().unwrap();
+        writeln!(owner, "{pid}").unwrap();
+    }
+
+    #[test]
+    fn concurrent_observers_do_not_make_a_crashed_daemon_appear_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.lock");
+        let probe = lock_file(&path).unwrap();
+        publish_owner_pid(&library, &probe, std::process::id());
+        let mut stale = DaemonStatus::starting(&Default::default());
+        stale.ready = true;
+        stale
+            .write(&library.root.join("daemon.status.json"))
+            .unwrap();
+
+        let _observation = wisp_host::status::StartupPublicationGate::try_observe(&path)
+            .unwrap()
+            .unwrap();
+        FileExt::try_lock_shared(&probe).unwrap();
+        // A competing reader's probe cannot establish ownership of the stale ready snapshot.
+        assert!(!daemon::running(&library).unwrap());
+        assert!(daemon::status(&library).unwrap().is_none());
+        assert!(!daemon::ready(&library).unwrap());
+        FileExt::unlock(&probe).unwrap();
+    }
+
+    #[test]
+    fn process_lock_alone_and_stale_status_do_not_imply_initialized_readiness() {
+        use fs2::FileExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let lock = crate::library::lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        publish_owner_pid(&library, &lock, std::process::id());
+        assert!(daemon::running(&library).unwrap());
+        assert!(!daemon::ready(&library).unwrap());
+        let path = library.root.join("daemon.status.json");
+        let mut status = DaemonStatus::starting(&Default::default());
+        status.write(&path).unwrap();
+        assert!(!daemon::ready(&library).unwrap());
+        status.ready = true;
+        status.write(&path).unwrap();
+        assert!(daemon::ready(&library).unwrap());
+        status.running = false;
+        status.write(&path).unwrap();
+        assert!(!daemon::ready(&library).unwrap());
+        status.running = true;
+        status.write(&path).unwrap();
+        drop(lock);
+        // A concurrent process spawn may inherit the descriptor until close-on-exec runs.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while daemon::running(&library).unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "released daemon lock remained held"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!daemon::ready(&library).unwrap());
+        assert!(daemon::status(&library).unwrap().is_none());
+    }
+
+    #[test]
+    fn owned_start_reports_early_exit_and_cleans_the_unique_stop_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let started = Instant::now();
+        // The test runner rejects daemon CLI flags, exercising startup failure on every platform.
+        let result =
+            OwnedDaemon::start_with_executable(&library, &std::env::current_exe().unwrap());
+        let error = result.err().expect("test runner must reject daemon flags");
+        assert!(
+            error.to_string().contains("exited before initialization"),
+            "{error:#}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!running(&library).unwrap());
+        assert!(std::fs::read_dir(&library.root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".stop")
+        }));
+    }
+    #[test]
+    fn a_new_lock_owner_cannot_reuse_the_previous_daemons_ready_snapshot() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        publish_owner_pid(&library, &lock, snapshot.pid);
+        lock.set_modified(published + Duration::from_secs(2))
+            .unwrap();
+        assert!(running(&library).unwrap());
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+        lock.set_modified(published - Duration::from_secs(2))
+            .unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn equal_timestamps_cannot_make_a_previous_owners_snapshot_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let owner_pid = std::process::id();
+        publish_owner_pid(&library, &lock, owner_pid);
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.pid = owner_pid.wrapping_add(1);
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        lock.set_modified(published).unwrap();
+        assert_eq!(lock.metadata().unwrap().modified().unwrap(), published);
+        assert!(running(&library).unwrap());
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+
+        snapshot.pid = owner_pid;
+        snapshot.write(&path).unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn publication_gate_hides_previous_owner_until_new_pid_and_status_are_published() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let lock_path = library.root.join("daemon.lock");
+        let lock = lock_file(&lock_path).unwrap();
+        let path = library.root.join("daemon.status.json");
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        publish_owner_pid(&library, &lock, snapshot.pid);
+        snapshot.ready = true;
+        snapshot.write(&path).unwrap();
+        let published = std::fs::metadata(&path).unwrap().modified().unwrap();
+        lock.set_modified(published).unwrap();
+
+        let publication = wisp_host::status::StartupPublicationGate::acquire(&lock_path).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        // Model a restart paused before PID publication, with all stale observations matching.
+        assert_eq!(lock.metadata().unwrap().modified().unwrap(), published);
+        assert_eq!(
+            wisp_io::read_bounded(&owner_pid_path(&library), 11).unwrap(),
+            format!("{}\n", snapshot.pid).as_bytes()
+        );
+        assert!(running(&library).unwrap());
+        assert!(DaemonStatus::read(&path).unwrap().ready);
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+
+        let next_owner_pid = snapshot.pid.wrapping_add(1).max(1);
+        publish_owner_pid(&library, &lock, next_owner_pid);
+        assert!(status(&library).unwrap().is_none());
+        drop(publication);
+        // Equal timestamps leave PID matching as the barrier after publication completes.
+        lock.set_modified(published).unwrap();
+        assert!(status(&library).unwrap().is_none());
+        assert!(!ready(&library).unwrap());
+        snapshot.pid = next_owner_pid;
+        snapshot.write(&path).unwrap();
+        assert!(ready(&library).unwrap());
+    }
+
+    #[test]
+    fn incomplete_lock_pid_publication_is_not_ready() {
+        let temporary = tempfile::tempdir().unwrap();
+        let library = Library::open(Some(temporary.path().to_owned())).unwrap();
+        let lock = lock_file(&library.root.join("daemon.lock")).unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let mut snapshot = DaemonStatus::starting(&Default::default());
+        snapshot.ready = true;
+        let path = library.root.join("daemon.status.json");
+        snapshot.write(&path).unwrap();
+        assert!(status(&library).unwrap().is_none());
+        let mut owner = owner_file(&library, &lock);
+        for bytes in [
+            Vec::new(),
+            snapshot.pid.to_string().into_bytes(),
+            b"0\n".to_vec(),
+            b"invalid\n".to_vec(),
+            b"\xff\n".to_vec(),
+        ] {
+            owner.set_len(0).unwrap();
+            owner.rewind().unwrap();
+            owner.write_all(&bytes).unwrap();
+            snapshot.write(&path).unwrap();
+            assert!(running(&library).unwrap());
+            assert!(status(&library).unwrap().is_none(), "{bytes:?}");
+            assert!(!ready(&library).unwrap(), "{bytes:?}");
+        }
+        publish_owner_pid(&library, &lock, snapshot.pid);
+        snapshot.write(&path).unwrap();
+        assert!(ready(&library).unwrap());
+    }
 }

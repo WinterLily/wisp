@@ -2,9 +2,11 @@
 import argparse
 import json
 from pathlib import Path
-import zipfile
+import sys
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from package_tools import write_package
 
 
 def main():
@@ -43,11 +45,7 @@ def main():
              "program.json": json.dumps(program, indent=2).encode()}
     for name in ("generate", "composite", "present"):
         files[f"shaders/{name}.wgsl"] = (HERE / f"{name}.wgsl").read_bytes()
-    with zipfile.ZipFile(args.output, "x") as archive:
-        for name, data in files.items():
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, data)
+    write_package(args.output, files)
     print(f"Created {args.output}")
 
 

@@ -39,6 +39,12 @@ struct Args {
     /// Hold an exclusive lock for a managed daemon instance
     #[arg(long)]
     lock_file: Option<PathBuf>,
+    /// Publish initialized readiness, accepted config generations and output state
+    #[arg(long, conflicts_with_all = ["check", "list_outputs", "list_audio_devices"])]
+    status_file: Option<PathBuf>,
+    /// Exit gracefully when this file appears (for an owning test/session harness)
+    #[arg(long, conflicts_with_all = ["check", "list_outputs", "list_audio_devices"])]
+    stop_file: Option<PathBuf>,
     /// Validate all configured wallpapers without a display server or GPU
     #[arg(long, conflicts_with = "frames")]
     check: bool,
@@ -106,25 +112,49 @@ fn main() -> Result<()> {
     }
     let _instance_lock = if let Some(path) = args.lock_file {
         use fs2::FileExt;
+        let publication = wisp_host::status::StartupPublicationGate::acquire(&path)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(&path)?;
         file.try_lock_exclusive()
             .context("a managed wallpaper daemon is already running")?;
+        // Refresh ownership before status publication so a previous process's snapshot is stale.
+        use std::io::Write;
+        file.set_len(0)?;
+        let owner = format!("{}\n", std::process::id());
+        (&file).write_all(owner.as_bytes())?;
+        #[cfg(windows)]
+        {
+            // Other handles cannot read the exclusively locked file on Windows.
+            let mut owner_path = path.into_os_string();
+            owner_path.push(".pid");
+            std::fs::write(PathBuf::from(owner_path), owner.as_bytes())?;
+        }
+        drop(publication);
         Some(file)
     } else {
         None
     };
-    run(Options {
+    let result = run(Options {
         config,
         config_path: args.config,
         list_outputs: args.list_outputs,
         json: args.json,
         frames: args.frames,
-    })
+        status_path: args.status_file,
+        stop_path: args.stop_file.clone(),
+    });
+    if let Some(path) = args.stop_file {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    result
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

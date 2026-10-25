@@ -16,3 +16,6 @@ wisp-host-wayland.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wisp-host-windows.workspace = true
+
+[dev-dependencies]
+wisp-compiler.workspace = true
