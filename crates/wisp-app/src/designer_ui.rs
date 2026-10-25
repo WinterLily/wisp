@@ -172,15 +172,15 @@ impl App {
                 return Task::perform(
                     async move {
                         let dialog = rfd::AsyncFileDialog::new().set_title(if project {
-                            "Open Easy Designer project"
+                            "open easy designer project"
                         } else {
-                            "Choose wallpaper image"
+                            "choose wallpaper image"
                         });
                         let file = if project {
                             dialog.pick_folder().await
                         } else {
                             dialog
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                                .add_filter("images", &["png", "jpg", "jpeg", "webp"])
                                 .pick_file()
                                 .await
                         };
@@ -365,9 +365,9 @@ impl App {
                     return Task::perform(
                         async move {
                             let dialog = rfd::AsyncFileDialog::new().set_title(if project {
-                                "Save a new project folder"
+                                "save a new project folder"
                             } else {
-                                "Export wallpaper"
+                                "export wallpaper"
                             });
                             let chosen = if project {
                                 dialog
@@ -376,7 +376,7 @@ impl App {
                                     .await
                             } else {
                                 dialog
-                                    .add_filter("Wisp wallpaper", &["wisp"])
+                                    .add_filter("wisp wallpaper", &["wisp"])
                                     .set_file_name("wallpaper.wisp")
                                     .save_file()
                                     .await
@@ -512,7 +512,7 @@ impl App {
             });
         let mut layers = column![
             row![
-                text("Front to back").size(11),
+                text("Front to back").size(12),
                 space().width(Fill),
                 icon_button(
                     Icon::Create,
@@ -528,7 +528,7 @@ impl App {
         .spacing(6);
         layers = layers
             .push(self.layer_rows_view(image_layers))
-            .push(iced::widget::rule::horizontal(1));
+            .push(iced::widget::rule::horizontal(1).style(style::divider));
         layers = layers.push(
             button(
                 row![
@@ -600,7 +600,7 @@ impl App {
                     panel = panel
                         .push(
                             checkbox(effect.enabled(&draft.design))
-                                .label(effect.to_string())
+                                .label(effect.to_string().to_lowercase())
                                 .on_toggle_maybe(enabled.then_some(move |value| {
                                     action(DesignerMessage::Toggle(effect, value))
                                 })),
@@ -610,19 +610,21 @@ impl App {
             }
         }
         if selection == DesignerSelection::Color {
-            panel = panel.push(iced::widget::rule::horizontal(1)).push(
-                pick_list(
-                    crate::designer::Preset::ALL.as_slice(),
-                    None::<crate::designer::Preset>,
-                    move |preset| action(DesignerMessage::Preset(preset)),
-                )
-                .placeholder("Scene preset…")
-                .width(Fill),
-            );
+            panel = panel
+                .push(iced::widget::rule::horizontal(1).style(style::divider))
+                .push(
+                    pick_list(
+                        crate::designer::Preset::ALL.as_slice(),
+                        None::<crate::designer::Preset>,
+                        move |preset| action(DesignerMessage::Preset(preset)),
+                    )
+                    .placeholder("scene preset…")
+                    .width(Fill),
+                );
         }
         column![
             container(scrollable(layers).height(iced::Shrink)).max_height(240),
-            iced::widget::rule::horizontal(1),
+            iced::widget::rule::horizontal(1).style(style::divider),
             scrollable(panel).height(Fill),
         ]
         .spacing(14)
@@ -675,28 +677,30 @@ impl App {
                 text("Start with an image.").size(32),
                 text("Give it a little motion. Make it your own.")
                     .size(15)
-                    .style(|t| text::Style {
+                    .style(|t| iced_text::Style {
                         color: Some(style::muted(t))
                     }),
                 space().height(12),
                 row![
-                    button("Choose image…")
-                        .style(iced_button::primary)
+                    button("choose image…")
+                        .style(style::primary)
                         .on_press_maybe((!self.busy).then_some(action(Browse(false)))),
-                    button("Open project…")
+                    button("open project…")
                         .on_press_maybe((!self.busy).then_some(action(Browse(true))))
                 ]
                 .spacing(12),
                 text_input("Image or project folder", &self.import_path)
                     .on_input(Message::ImportPath)
                     .width(420),
-                button("Open path").on_press_maybe(
+                button("open path").on_press_maybe(
                     (!self.busy && !self.import_path.trim().is_empty())
                         .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
                 ),
-                text("PNG, JPEG or WebP").size(12).style(|t| text::Style {
-                    color: Some(style::muted(t))
-                }),
+                text("PNG, JPEG or WebP")
+                    .size(12)
+                    .style(|t| iced_text::Style {
+                        color: Some(style::muted(t))
+                    }),
             ]
             .spacing(14)
             .align_x(iced::Center);
@@ -745,8 +749,8 @@ impl App {
             })
             .size(15),
             text(if self.designer.dirty { "· edited" } else { "" })
-                .size(11)
-                .style(|t| text::Style {
+                .size(12)
+                .style(|t| iced_text::Style {
                     color: Some(style::muted(t))
                 }),
             space().width(Fill),
@@ -777,11 +781,8 @@ impl App {
                         .push(text("Author").size(12))
                         .push(text_input("Author", &d.author).on_input(move |v| action(Author(v))));
                     if let Err(error) = d.validate() {
-                        controls = controls.push(
-                            text(error.to_string())
-                                .size(12)
-                                .color(iced::Color::from_rgb(0.9, 0.45, 0.45)),
-                        );
+                        controls =
+                            controls.push(text(error.to_string()).size(12).style(style::error));
                     }
                     let ready = !self.busy
                         && self.designer.valid
@@ -793,27 +794,27 @@ impl App {
                             .is_some_and(|p| p.status.lock().unwrap().error.is_none());
                     controls = controls
                         .push(
-                            button("Save project…")
-                                .style(iced_button::primary)
+                            button("save project…")
+                                .style(style::primary)
                                 .width(Fill)
                                 .on_press_maybe(ready.then_some(action(Save(true)))),
                         )
                         .push(
-                            button("Save to library")
+                            button("save to library")
                                 .width(Fill)
                                 .on_press_maybe(ready.then_some(action(Install))),
                         )
                         .push(
-                            button("Export wallpaper…")
+                            button("export wallpaper…")
                                 .width(Fill)
                                 .on_press_maybe(ready.then_some(action(Save(false)))),
                         )
-                        .push(iced::widget::rule::horizontal(1))
+                        .push(iced::widget::rule::horizontal(1).style(style::divider))
                         .push(
                             row![
-                                button("New image…")
+                                button("new image…")
                                     .on_press_maybe((!self.busy).then_some(action(Browse(false)))),
-                                button("Open…")
+                                button("open…")
                                     .on_press_maybe((!self.busy).then_some(action(Browse(true)))),
                             ]
                             .spacing(4),
@@ -824,7 +825,7 @@ impl App {
                                 .on_submit(action(Open(PathBuf::from(self.import_path.trim())))),
                         )
                         .push(
-                            button("Open path").on_press_maybe(
+                            button("open path").on_press_maybe(
                                 (!self.busy && !self.import_path.trim().is_empty())
                                     .then(|| action(Open(PathBuf::from(self.import_path.trim())))),
                             ),
@@ -834,11 +835,15 @@ impl App {
                                 "Source · {} × {}",
                                 draft.dimensions.0, draft.dimensions.1
                             ))
-                            .size(11),
+                            .size(12),
                         )
-                        .push(text(&self.designer.report).size(11).style(|t| text::Style {
-                            color: Some(style::muted(t)),
-                        }));
+                        .push(
+                            text(&self.designer.report)
+                                .size(12)
+                                .style(|t| iced_text::Style {
+                                    color: Some(style::muted(t)),
+                                }),
+                        );
                 }
             }
             let controls: Element<'_, Message> = match panel {

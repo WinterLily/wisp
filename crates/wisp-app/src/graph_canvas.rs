@@ -127,15 +127,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
-        f.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            if theme.extended_palette().is_dark {
-                Color::from_rgb8(18, 19, 21)
-            } else {
-                Color::from_rgb8(224, 223, 220)
-            },
-        );
+        f.fill_rectangle(Point::ORIGIN, bounds.size(), super::style::surface(theme));
         let Some(doc) = &self.0.document else {
             return vec![f.into_geometry()];
         };
@@ -144,18 +136,18 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
             for y in (0..bounds.height as usize).step_by(24) {
                 f.fill(
                     &Path::circle(Point::new(x as f32, y as f32), 0.7),
-                    theme.extended_palette().background.strong.color,
+                    super::style::line(theme),
                 );
             }
         }
         let color = |ty: Option<wisp_ir::ValueType>| match ty {
-            Some(wisp_ir::ValueType::Color) => Color::from_rgb8(227, 169, 100),
+            Some(wisp_ir::ValueType::Color) => Color::from_rgb8(181, 154, 116),
             Some(
                 wisp_ir::ValueType::Vector2
                 | wisp_ir::ValueType::Vector3
                 | wisp_ir::ValueType::Vector4,
-            ) => Color::from_rgb8(125, 189, 245),
-            _ => Color::from_rgb8(131, 215, 175),
+            ) => Color::from_rgb8(131, 157, 178),
+            _ => Color::from_rgb8(139, 164, 145),
         };
         let curve = |a: Point, b: Point| {
             Path::new(|p| {
@@ -185,13 +177,16 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
         {
             f.stroke(
                 &curve(self.screen([pos[0] + WIDTH, pos[1] + 28.]), b),
-                Stroke::default().with_width(2.).with_color(Color::WHITE),
+                Stroke::default()
+                    .with_width(2.)
+                    .with_color(theme.palette().text),
             );
         }
         for n in &doc.graph.nodes {
             let p = self.screen(doc.layout.positions.get(&n.id).copied().unwrap_or_default());
             let size = Size::new(WIDTH * zoom, height(ports(&n.op).len()) * zoom);
-            let rect = Path::rectangle(p, size);
+            let rect =
+                Path::rounded_rectangle(p, size, (super::style::CORNER_RADIUS * zoom).into());
             f.fill(&rect, theme.palette().background);
             f.stroke(
                 &rect,
@@ -204,7 +199,7 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                     .with_color(if self.0.selected.as_ref() == Some(&n.id) {
                         theme.palette().primary
                     } else {
-                        theme.extended_palette().background.strong.color
+                        super::style::line(theme)
                     }),
             );
             let title = if doc.graph.output == n.id {
@@ -213,8 +208,9 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                 label(&n.op)
             };
             f.fill_text(Text {
-                content: title,
+                content: title.to_lowercase(),
                 position: Point::new(p.x + 10. * zoom, p.y + 5. * zoom),
+                font: super::style::FONT,
                 size: (14. * zoom).into(),
                 color: theme.palette().text,
                 ..Default::default()
@@ -222,13 +218,14 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
             f.fill_text(Text {
                 content: format!(
                     "{} · {}",
-                    n.id,
+                    n.id.to_lowercase(),
                     doc.value_type(&n.id)
-                        .map(|t| format!("{t:?}"))
+                        .map(|t| format!("{t:?}").to_lowercase())
                         .unwrap_or("?".into())
                 ),
                 position: Point::new(p.x + 10. * zoom, p.y + 28. * zoom),
-                size: (10. * zoom).into(),
+                font: super::style::FONT,
+                size: (11. * zoom).into(),
                 color: super::style::muted(theme),
                 ..Default::default()
             });
@@ -248,11 +245,12 @@ impl canvas::Program<Message> for GraphCanvas<'_> {
                     content: format!(
                         "{port} · {}",
                         doc.input_type(&n.id, port)
-                            .map(|t| format!("{t:?}"))
+                            .map(|t| format!("{t:?}").to_lowercase())
                             .unwrap_or("same type".into())
                     ),
                     position: Point::new(pos.x + 10. * zoom, pos.y - 8. * zoom),
-                    size: (11. * zoom).into(),
+                    font: super::style::FONT,
+                    size: (12. * zoom).into(),
                     color: theme.palette().text,
                     ..Default::default()
                 });

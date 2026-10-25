@@ -1,7 +1,7 @@
-use super::{Message, motion, style};
+use super::{Message, motion, style, text};
 use iced::{
     Element,
-    widget::{container, svg, text, tooltip},
+    widget::{container, svg, tooltip},
 };
 use std::time::Duration;
 
@@ -76,8 +76,8 @@ pub(super) fn icon_button<'a>(
 ) -> Element<'a, Message> {
     let enabled = message.is_some();
     let glyph = svg(icon.handle())
-        .width(20)
-        .height(20)
+        .width(17)
+        .height(17)
         .style(move |theme: &iced::Theme, _| svg::Style {
             color: Some(if !enabled {
                 style::muted(theme).scale_alpha(0.5)
@@ -104,7 +104,7 @@ pub(super) fn icon_button<'a>(
     .gap(6)
     .delay(Duration::from_millis(300))
     .snap_within_viewport(true)
-    .style(container::rounded_box)
+    .style(style::panel)
     .into()
 }
 
