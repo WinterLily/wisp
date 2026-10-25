@@ -304,6 +304,12 @@ impl App {
             _ => self.preview.as_ref(),
         }
     }
+    pub(super) fn capture_error(&self) -> Option<String> {
+        self.startup_error.clone().or_else(|| {
+            self.active_preview()
+                .and_then(|preview| preview.status.lock().unwrap().error.clone())
+        })
+    }
     fn capture(&mut self, exit: bool) -> Task<Message> {
         self.capturing = true;
         self.capture_started = Instant::now();

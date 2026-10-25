@@ -823,6 +823,11 @@ impl App {
             Message::AuditPoll => return self.audit_poll(),
             Message::Screenshot(screenshot) => {
                 self.capturing = false;
+                if self.capture_exit
+                    && let Some(error) = self.capture_error()
+                {
+                    *self.exit_failure.lock().unwrap() = Some(error);
+                }
                 if let Some(path) = self.screenshot.take() {
                     let result = (|| -> Result<()> {
                         use ::image::ImageEncoder;
