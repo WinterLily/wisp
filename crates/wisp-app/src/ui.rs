@@ -954,11 +954,7 @@ impl App {
                 ]
                 .spacing(10),
             );
-            detail = detail.push(
-                iced::widget::Shader::new(preview.clone())
-                    .width(Fill)
-                    .height(280),
-            );
+            detail = detail.push(preview.view(280.0));
             detail = detail.push(text(&item.manifest.description));
             detail = detail.push(
                 text(format!(

@@ -468,7 +468,7 @@ impl App {
         .spacing(16);
         if let Some(p) = &self.designer.preview {
             preview = preview
-                .push(iced::widget::Shader::new(p.clone()).width(Fill).height(380))
+                .push(p.view(380.0))
                 .push(text(&self.designer.report).size(13));
             if let Some(d) = &self.designer.draft {
                 preview = preview.push(text(format!("Source: {} × {} · Controls become wallpaper defaults when saved or exported.", d.dimensions.0, d.dimensions.1)).size(13));

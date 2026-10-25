@@ -1,7 +1,8 @@
 //! Iced only composites a texture; wallpaper rendering uses the desktop runtime.
 use iced::{
-    Rectangle, mouse,
+    ContentFit, Element, Length, Rectangle, Size, mouse,
     widget::shader::{self, Viewport},
+    widget::{Shader, container, responsive},
 };
 use std::{
     collections::BTreeMap,
@@ -22,6 +23,34 @@ pub struct Preview {
     pub parameters: Arc<BTreeMap<String, ParameterValue>>,
     pub globals: Globals,
     pub status: Arc<Mutex<Status>>,
+}
+impl Preview {
+    /// Fit the live render to its image, keeping the panel's height as a cap.
+    pub fn view<Message: 'static>(&self, max_height: f32) -> Element<'static, Message> {
+        let (width, height) = self
+            .wallpaper
+            .images()
+            .first()
+            .map(|image| image.dimensions())
+            .unwrap_or((16, 9));
+        let source = Size::new(width as f32, height as f32);
+        let preview = self.clone();
+        responsive(move |available| {
+            let size = ContentFit::Contain.fit(
+                source,
+                Size::new(available.width, available.height.min(max_height)),
+            );
+            container(
+                Shader::new(preview.clone())
+                    .width(size.width)
+                    .height(size.height),
+            )
+            .center_x(Length::Fill)
+            .into()
+        })
+        .height(Length::Shrink)
+        .into()
+    }
 }
 pub struct Primitive {
     preview: Preview,
