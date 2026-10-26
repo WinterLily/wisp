@@ -66,10 +66,12 @@ fn wisp_rain(uv: vec2<f32>, density: f32, size: f32, speed: f32, direction: f32,
     let physical = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
     let rain_position = vec2<f32>(dot(physical, across), dot(physical, along));
     let t = globals.time * clamp(speed, 0.0, 5.0);
-    let reach = i32(ceil(radius * 3.5 * shape.y + 0.5));
     var coverage = 0.0;
     for (var layer = 0; layer < 3; layer++) {
         let depth = f32(layer);
+        let length_variation = 2.8 * (1.0 + 0.9 / (1.0 + depth * 2.0));
+        // Include the stretched footprint so long streaks do not pop at cell boundaries.
+        let reach = i32(ceil(radius * (0.7 + length_variation) * shape.y + 0.5));
         let grid = clamp(density, 1.0, 32.0) * (1.0 + depth * 1.3);
         let p = rain_position * grid + vec2<f32>(depth * 17.13, depth * 31.79);
         let pixel = grid / max(globals.resolution.y, 1.0);
@@ -78,11 +80,10 @@ fn wisp_rain(uv: vec2<f32>, density: f32, size: f32, speed: f32, direction: f32,
             let cell_x = base_x + x;
             let column_seed = wisp_hash(vec2<i32>(cell_x, 137 + layer * 31));
             // Distant drops cross the image more slowly while retaining rapid downward travel.
-            let velocity = (1.25 + column_seed * 0.8) / (1.0 + depth * 0.25);
+            let velocity = (1.25 + column_seed * 0.8) * 1.7 / (1.0 + depth * 0.25);
             let column_p = p - vec2<f32>(0.0, t * grid * velocity);
             let base_y = i32(floor(column_p.y));
-            for (var y = -4; y <= 4; y++) {
-                if abs(y) > reach { continue; }
+            for (var y = -reach; y <= reach; y++) {
                 let cell = vec2<i32>(cell_x, base_y + y);
                 let seed = wisp_hash(cell + vec2<i32>(layer * 43, layer * 59));
                 let seed2 = wisp_hash(cell + vec2<i32>(71 + layer * 29, 19));
@@ -90,7 +91,7 @@ fn wisp_rain(uv: vec2<f32>, density: f32, size: f32, speed: f32, direction: f32,
                 if variation < 0.24 { continue; }
                 let center = vec2<f32>(cell) + vec2<f32>(seed, seed2);
                 let d = column_p - center;
-                let half_length = radius * (0.7 + seed2 * seed2 * 2.8) * shape.y;
+                let half_length = radius * (0.7 + seed2 * seed2 * length_variation) * shape.y;
                 let half_width = radius * (0.025 + seed * seed * 0.065) * shape.x;
                 let blur = half_width + pixel * (0.55 + (2.0 - depth) * 0.2);
                 if abs(d.x) > blur * 2.5 || abs(d.y) > half_length { continue; }

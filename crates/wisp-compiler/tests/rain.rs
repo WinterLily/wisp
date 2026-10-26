@@ -62,10 +62,10 @@ fn rain_graph_compiles_with_direction_and_axis_extremes() {
 
 // Correlation measures actual image motion without depending on individual random drop seeds.
 fn motion_offset(before: &[u8], after: &[u8], width: usize, height: usize) -> usize {
-    (0..40)
+    (0..72)
         .max_by_key(|offset| {
             let mut correlation = 0u64;
-            for y in 40..height - 40 {
+            for y in 72..height - 72 {
                 for x in 0..width {
                     correlation += u64::from(before[(y * width + x) * 4])
                         * u64::from(after[((y + offset) * width + x) * 4]);
@@ -118,6 +118,7 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
 
         let mut short_streaks = 0;
         let mut long_streaks = 0;
+        let mut very_long_streaks = 0;
         for x in 0..width as usize {
             let mut run = 0;
             for y in 0..height as usize {
@@ -130,6 +131,9 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
                     if run >= 20 {
                         long_streaks += 1;
                     }
+                    if run >= 65 {
+                        very_long_streaks += 1;
+                    }
                     run = 0;
                 }
             }
@@ -137,6 +141,11 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
         assert!(
             short_streaks > 50 && long_streaks > 20 && short_streaks > long_streaks,
             "rain lost depth variation: {short_streaks} short, {long_streaks} long streaks"
+        );
+
+        assert!(
+            very_long_streaks > 10,
+            "foreground streaks became too short: {very_long_streaks} runs longer than 65 pixels"
         );
 
         let rotated = render(&rain_wallpaper(90., 10., 1., 1.))
@@ -157,7 +166,7 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
         let moved = vertical.render_rgba(&gpu, width, height, &globals).unwrap();
         let offset = motion_offset(&first, &moved, width as usize, height as usize);
         assert!(
-            (14..=36).contains(&offset),
+            (28..=60).contains(&offset),
             "rain moved {offset} pixels in 1/30 second"
         );
         let sparse = render(&rain_wallpaper(0., 4., 1., 1.));
@@ -172,7 +181,7 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
             height as usize,
         );
         assert!(
-            (14..=36).contains(&offset),
+            (28..=60).contains(&offset),
             "density slowed rain to {offset} pixels in 1/30 second"
         );
 
