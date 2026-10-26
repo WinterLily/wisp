@@ -500,3 +500,19 @@ fn attached_effect_order_controls_weather_coordinates_and_budget_failures_are_at
     assert_eq!(stack.assets.len(), assets);
     stack.validate().unwrap();
 }
+
+#[test]
+fn new_rain_effects_use_a_diagonal_direction_in_layers_and_graph() {
+    let mut settings = wisp_app::layers::EffectSettings::default();
+    settings.preset(Effect::Rain);
+    assert_eq!(settings.rain_direction, 20.);
+    let mut document = Document::default();
+    let id = document.add("Rain", [0., 0.]).unwrap();
+    assert!(matches!(
+        document.node(&id).unwrap().op,
+        Op::Weather {
+            rain_direction: 20.,
+            ..
+        }
+    ));
+}

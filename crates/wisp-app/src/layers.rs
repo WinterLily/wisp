@@ -244,6 +244,9 @@ impl Default for EffectSettings {
 impl EffectSettings {
     pub fn preset(&mut self, effect: Effect) {
         self.effect = effect;
+        if effect == Effect::Rain {
+            self.rain_direction = 20.;
+        }
         self.amplitude = if effect == Effect::Clothing {
             0.012
         } else {

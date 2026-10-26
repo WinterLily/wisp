@@ -376,7 +376,7 @@ impl Document {
                 strength: empty(),
             },
             "Droplets" | "Rain" | "Ripples" => Op::Weather {
-                rain_direction: 0.,
+                rain_direction: if kind == "Rain" { 20. } else { 0. },
                 size_x: 1.,
                 size_y: 1.,
                 color: empty(),
