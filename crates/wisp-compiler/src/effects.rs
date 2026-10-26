@@ -128,7 +128,7 @@ impl Compiler<'_> {
                          let normal = normalize(vec3<f32>(water.xy, 1.0));\n\
                          let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);\n\
                          let ray = refract(vec3<f32>(0.0, 0.0, -1.0), normal, 0.7501875);\n\
-                         let offset = ray.xy / max(abs(ray.z), 0.1) * (0.3 + water.z * 1.8) / vec2<f32>(aspect, 1.0);\n\
+                         let offset = ray.xy / max(abs(ray.z), 0.1) * (0.75 + water.z * 1.8) / vec2<f32>(aspect, 1.0);\n\
                          let lens_uv = clamp(uv + offset * amount, vec2<f32>(0.000001), vec2<f32>(0.999999));\n\
                          let refracted = {}(lens_uv);\n\
                          let reflected_uv = clamp(uv + normal.xy * vec2<f32>(0.25 / aspect, -0.25), vec2<f32>(0.000001), vec2<f32>(0.999999));\n\

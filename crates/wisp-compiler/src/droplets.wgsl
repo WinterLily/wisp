@@ -1,6 +1,9 @@
 // A contact-angle meniscus gives beads a dark, steep rim and a broad lens interior.
 // Pixel-sized edge coverage keeps fine condensation stable when the output resizes.
 fn wisp_glass_bead(delta: vec2<f32>, radius: f32, stretch: vec2<f32>, seed: f32, pixel: f32) -> vec4<f32> {
+    if any(abs(delta) > radius * stretch * vec2<f32>(1.5, 1.2) + vec2<f32>(pixel)) {
+        return vec4<f32>(0.0);
+    }
     var q = delta / (radius * stretch);
     let bend = 0.13 * sin(q.y * 2.7 + seed * 6.2831853);
     q.x += bend * (1.0 - min(q.y * q.y, 1.0));
@@ -29,15 +32,17 @@ fn wisp_glass_droplets(uv: vec2<f32>, density: f32, size: f32, speed: f32, axis_
         let scale = grid * select(select(1.45, 7.3, layer == 0), 0.85, moving);
         let pixel = scale / max(globals.resolution.y, 1.0);
         let p = physical * scale + vec2<f32>(f32(layer) * 23.71);
-        let reach = i32(ceil(radius * max(shape.x, shape.y) * select(1.8, 2.5, moving)));
-        for (var x = -3; x <= 3; x++) {
-            if abs(x) > reach { continue; }
+        // Wakes can reach a second row even when their heads are very small.
+        let footprint = max(radius * shape * vec2<f32>(1.2, 1.8), select(vec2<f32>(0.0), vec2<f32>(0.0, 1.2), moving));
+        let reach = vec2<i32>(ceil(footprint + vec2<f32>(0.33)));
+        for (var x = -2; x <= 2; x++) {
+            if abs(x) > reach.x { continue; }
             let column = i32(floor(p.x)) + x;
             let column_seed = wisp_hash(vec2<i32>(column, 391 + layer * 71));
             let travel = time * (0.25 + column_seed * 0.55);
             let local = p - vec2<f32>(0.0, select(0.0, travel, moving));
-            for (var y = -3; y <= 3; y++) {
-                if abs(y) > reach { continue; }
+            for (var y = -2; y <= 2; y++) {
+                if abs(y) > reach.y { continue; }
                 let cell = vec2<i32>(column, i32(floor(local.y)) + y);
                 let seed = wisp_hash(cell + vec2<i32>(layer * 101, 37));
                 let seed2 = wisp_hash(cell + vec2<i32>(83, layer * 131));
@@ -58,8 +63,9 @@ fn wisp_glass_droplets(uv: vec2<f32>, density: f32, size: f32, speed: f32, axis_
                 if moving {
                     let behind = -delta.y;
                     let length = 0.7 + seed * 0.5;
-                    let taper = smoothstep(0.0, drop_radius, behind) * (1.0 - smoothstep(0.0, length, behind));
                     let width = max(drop_radius * stretch.x * 0.22, pixel * 0.4);
+                    if behind <= 0.0 || behind >= length || abs(delta.x) > width * 2.0 { continue; }
+                    let taper = smoothstep(0.0, drop_radius, behind) * (1.0 - smoothstep(0.0, length, behind));
                     let across = delta.x / width;
                     let wet = exp(-across * across * 2.0) * taper;
                     let wake = vec4<f32>(across * 0.7, 0.04, drop_radius * 0.12 / scale, wet * 0.65);

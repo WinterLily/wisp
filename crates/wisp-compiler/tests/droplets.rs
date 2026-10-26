@@ -31,13 +31,17 @@ fn parameters() -> Vec<Parameter> {
 }
 
 fn surface_renderer(gpu: &Gpu, shape: [f32; 2]) -> Renderer {
+    surface_renderer_using(gpu, shape, include_str!("../src/droplets.wgsl"))
+}
+
+fn surface_renderer_using(gpu: &Gpu, shape: [f32; 2], droplets: &str) -> Renderer {
     let source = format!(
         "{}\n{}\nfn wallpaper(uv: vec2<f32>) -> vec4<f32> {{
             let water = wisp_glass_droplets(uv, params.p0, params.p1, params.p2, vec2<f32>({}, {}));
             return vec4<f32>(water.w, water.z * 32.0, 0.0, 1.0);
         }}",
         include_str!("../src/effects.wgsl"),
-        include_str!("../src/droplets.wgsl"),
+        droplets,
         shape[0],
         shape[1],
     );
@@ -164,6 +168,37 @@ fn droplets_keep_physical_proportions_and_respond_to_size_and_axis_controls() {
         .render_rgba(&gpu, 576, 576, &Globals::new(576, 576))
         .unwrap();
     assert!(coverage(&broad) > coverage(&thin) * 2);
+}
+
+#[test]
+#[ignore = "requires a working graphics adapter"]
+fn droplet_neighborhood_contains_stretched_heads_and_complete_wakes() {
+    let gpu = gpu();
+    // An oversized search exposes any water clipped by the production neighborhood.
+    let reference = include_str!("../src/droplets.wgsl")
+        .replace("var x = -2; x <= 2", "var x = -4; x <= 4")
+        .replace("var y = -2; y <= 2", "var y = -4; y <= 4")
+        .replace("if abs(x) > reach.x { continue; }", "")
+        .replace("if abs(y) > reach.y { continue; }", "");
+    for shape in [[0.2, 2.], [2., 0.2], [2., 2.]] {
+        let mut bounded = surface_renderer(&gpu, shape);
+        let mut unbounded = surface_renderer_using(&gpu, shape, &reference);
+        for size in [0.03, 0.45] {
+            for renderer in [&mut bounded, &mut unbounded] {
+                set(renderer, &gpu, "size", size);
+                set(renderer, &gpu, "density", 4.);
+            }
+            for time in [0., 3.7] {
+                let mut globals = Globals::new(320, 192);
+                globals.time = time;
+                assert_eq!(
+                    bounded.render_rgba(&gpu, 320, 192, &globals).unwrap(),
+                    unbounded.render_rgba(&gpu, 320, 192, &globals).unwrap(),
+                    "neighborhood clipped water at shape {shape:?}, size {size}, time {time}",
+                );
+            }
+        }
+    }
 }
 
 #[test]
