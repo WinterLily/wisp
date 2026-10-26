@@ -55,45 +55,57 @@ fn wisp_water_track(d: vec2<f32>, radius: f32, shape: vec2<f32>, seed: f32, acti
     let wet = exp(-q * q * 2.0) * taper * activity;
     return vec4<f32>(q * wet * 1.1, wet * 0.08, wet * radius * 0.06, wet * 0.8);
 }
-// Airborne rain needs a narrow motion-blurred silhouette, separate from water on glass.
+// Separate depths prevent the equally sharp, equally spaced streaks of a flat overlay.
 fn wisp_rain(uv: vec2<f32>, density: f32, size: f32, speed: f32, direction: f32, axis_scale: vec2<f32>) -> f32 {
-    let grid = clamp(density, 1.0, 32.0);
     let radius = clamp(size, 0.03, 0.45);
     let shape = clamp(axis_scale, vec2<f32>(0.2), vec2<f32>(2.0));
     let angle = radians(clamp(direction, -180.0, 180.0));
     let across = vec2<f32>(cos(angle), -sin(angle));
     let along = vec2<f32>(sin(angle), cos(angle));
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
-    let physical = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0) * grid;
-    let p = vec2<f32>(dot(physical, across), dot(physical, along));
+    let physical = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let rain_position = vec2<f32>(dot(physical, across), dot(physical, along));
     let t = globals.time * clamp(speed, 0.0, 5.0);
-    let feather = grid / max(globals.resolution.y, 1.0) * 0.7;
-    let base_x = i32(floor(p.x));
     let reach = i32(ceil(radius * 3.5 * shape.y + 0.5));
     var coverage = 0.0;
-    for (var x = -1; x <= 1; x++) {
-        let cell_x = base_x + x;
-        let column_seed = wisp_hash(vec2<i32>(cell_x, 137));
-        // Speed is in screen heights per second so density does not slow the rainfall.
-        let travel = t * grid * (0.9 + column_seed * 0.8);
-        let column_p = p - vec2<f32>(0.0, travel);
-        let base_y = i32(floor(column_p.y));
-        for (var y = -4; y <= 4; y++) {
-            if abs(y) > reach { continue; }
-            let cell = vec2<i32>(cell_x, base_y + y);
-            let seed = wisp_hash(cell);
-            let seed2 = wisp_hash(cell + vec2<i32>(71, 19));
-            let center = vec2<f32>(cell) + vec2<f32>(0.18 + seed * 0.64, 0.18 + seed2 * 0.64);
-            let d = column_p - center;
-            let half_length = radius * (1.3 + seed2 * 2.2) * shape.y;
-            let longitudinal = d.y / half_length;
-            let taper = pow(max(1.0 - longitudinal * longitudinal, 0.0), 0.6);
-            let half_width = radius * (0.035 + seed * 0.025) * shape.x * taper;
-            let blade = (1.0 - smoothstep(max(half_width - feather, 0.0), half_width + feather, abs(d.x))) * taper;
-            coverage += blade * (0.35 + seed2 * 0.65);
+    for (var layer = 0; layer < 3; layer++) {
+        let depth = f32(layer);
+        let grid = clamp(density, 1.0, 32.0) * (1.0 + depth * 1.3);
+        let p = rain_position * grid + vec2<f32>(depth * 17.13, depth * 31.79);
+        let pixel = grid / max(globals.resolution.y, 1.0);
+        let base_x = i32(floor(p.x));
+        for (var x = -1; x <= 1; x++) {
+            let cell_x = base_x + x;
+            let column_seed = wisp_hash(vec2<i32>(cell_x, 137 + layer * 31));
+            // Distant drops cross the image more slowly while retaining rapid downward travel.
+            let velocity = (1.25 + column_seed * 0.8) / (1.0 + depth * 0.25);
+            let column_p = p - vec2<f32>(0.0, t * grid * velocity);
+            let base_y = i32(floor(column_p.y));
+            for (var y = -4; y <= 4; y++) {
+                if abs(y) > reach { continue; }
+                let cell = vec2<i32>(cell_x, base_y + y);
+                let seed = wisp_hash(cell + vec2<i32>(layer * 43, layer * 59));
+                let seed2 = wisp_hash(cell + vec2<i32>(71 + layer * 29, 19));
+                let variation = wisp_hash(cell + vec2<i32>(109, 83 + layer * 37));
+                if variation < 0.24 { continue; }
+                let center = vec2<f32>(cell) + vec2<f32>(seed, seed2);
+                let d = column_p - center;
+                let half_length = radius * (0.7 + seed2 * seed2 * 2.8) * shape.y;
+                let half_width = radius * (0.025 + seed * seed * 0.065) * shape.x;
+                let blur = half_width + pixel * (0.55 + (2.0 - depth) * 0.2);
+                if abs(d.x) > blur * 2.5 || abs(d.y) > half_length { continue; }
+                let longitudinal = d.y / half_length;
+                let tail = smoothstep(-1.0, -0.35, longitudinal);
+                let head = 1.0 - smoothstep(0.6, 1.0, longitudinal);
+                let cross_section = exp(-2.0 * d.x * d.x / (blur * blur));
+                // Subpixel drops lose brightness instead of becoming equally bright one-pixel lines.
+                let visibility = half_width / blur;
+                let opacity = (0.15 + variation * variation * 0.85) / (1.0 + depth * 0.6);
+                coverage += cross_section * tail * head * visibility * opacity;
+            }
         }
     }
-    return clamp(coverage, 0.0, 1.0);
+    return 1.0 - exp(-coverage * 1.6);
 }
 // Neighbor reach follows the maximum footprint (at most 7 x 7 cells), preventing
 // large or elongated drops from popping at cell boundaries.

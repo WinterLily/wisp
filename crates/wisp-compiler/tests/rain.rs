@@ -112,8 +112,31 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
             }
         }
         assert!(
-            horizontal_edges > vertical_edges * 10,
-            "rain became rounded instead of long and narrow"
+            horizontal_edges > vertical_edges * 6,
+            "rain became rounded instead of long and narrow: horizontal edges {horizontal_edges}, vertical edges {vertical_edges}"
+        );
+
+        let mut short_streaks = 0;
+        let mut long_streaks = 0;
+        for x in 0..width as usize {
+            let mut run = 0;
+            for y in 0..height as usize {
+                if first[(y * width as usize + x) * 4] > 24 {
+                    run += 1;
+                } else {
+                    if (3..=12).contains(&run) {
+                        short_streaks += 1;
+                    }
+                    if run >= 20 {
+                        long_streaks += 1;
+                    }
+                    run = 0;
+                }
+            }
+        }
+        assert!(
+            short_streaks > 50 && long_streaks > 20 && short_streaks > long_streaks,
+            "rain lost depth variation: {short_streaks} short, {long_streaks} long streaks"
         );
 
         let rotated = render(&rain_wallpaper(90., 10., 1., 1.))
@@ -134,7 +157,7 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
         let moved = vertical.render_rgba(&gpu, width, height, &globals).unwrap();
         let offset = motion_offset(&first, &moved, width as usize, height as usize);
         assert!(
-            (14..=30).contains(&offset),
+            (14..=36).contains(&offset),
             "rain moved {offset} pixels in 1/30 second"
         );
         let sparse = render(&rain_wallpaper(0., 4., 1., 1.));
@@ -149,7 +172,7 @@ fn rain_renders_thin_fast_streaks_and_respects_rotation_mask_strength_and_pause(
             height as usize,
         );
         assert!(
-            (14..=30).contains(&offset),
+            (14..=36).contains(&offset),
             "density slowed rain to {offset} pixels in 1/30 second"
         );
 
