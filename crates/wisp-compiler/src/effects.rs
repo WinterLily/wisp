@@ -120,6 +120,56 @@ impl Compiler<'_> {
                 size_x,
                 size_y,
             } => {
+                if *kind == WeatherKind::Droplets {
+                    source.push_str(&format!(
+                        "let water = wisp_glass_droplets({}, {}, {}, {}, vec2<f32>({size_x:?}, {size_y:?}));\n\
+                         let domain = select(0.0, 1.0, all({} >= vec2<f32>(0.0)) && all({} <= vec2<f32>(1.0)));\n\
+                         let amount = clamp({}, 0.0, 1.0) * clamp({}, 0.0, 1.0) * domain;\n\
+                         let normal = normalize(vec3<f32>(water.xy, 1.0));\n\
+                         let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);\n\
+                         let ray = refract(vec3<f32>(0.0, 0.0, -1.0), normal, 0.7501875);\n\
+                         let offset = ray.xy / max(abs(ray.z), 0.1) * (0.75 + water.z * 1.8) / vec2<f32>(aspect, 1.0);\n\
+                         let lens_uv = clamp(uv + offset * amount, vec2<f32>(0.000001), vec2<f32>(0.999999));\n\
+                         let refracted = {}(lens_uv);\n\
+                         let reflected_uv = clamp(uv + normal.xy * vec2<f32>(0.25 / aspect, -0.25), vec2<f32>(0.000001), vec2<f32>(0.999999));\n\
+                         let reflected = {}(reflected_uv);\n\
+                         let fresnel = 0.02 + 0.98 * pow(1.0 - normal.z, 5.0);\n\
+                         let rim = smoothstep(0.45, 0.95, length(normal.xy));\n\
+                         let caustic = pow(max(dot(normal, normalize(vec3<f32>(-0.35, -0.6, 1.0))), 0.0), 32.0);\n\
+                         let glint = pow(max(dot(normal, normalize(vec3<f32>(-0.4, -0.65, 1.0))), 0.0), 96.0) * 0.25;\n\
+                         let lens = refracted.rgb * (1.0 - rim * 0.85) * (1.0 - fresnel) + reflected.rgb * (fresnel + caustic * 0.35) + vec3<f32>(glint);\n\
+                         let blur_step = vec2<f32>(0.0035 / aspect, 0.0035);\n\
+                         var mist = {}.rgb * {}.a * 0.2;\n\
+                         var mist_alpha = {}.a * 0.2;\n",
+                        v(uv), v(density), v(size), v(speed), v(uv), v(uv), v(mask), v(strength),
+                        n(color), n(color), v(color), v(color), v(color),
+                    ));
+                    // Premultiplied filtering prevents transparent image RGB bleeding into the glass.
+                    for (x, y) in [
+                        (1.0, 0.0),
+                        (-1.0, 0.0),
+                        (0.0, 1.0),
+                        (0.0, -1.0),
+                        (0.707, 0.707),
+                        (-0.707, 0.707),
+                        (0.707, -0.707),
+                        (-0.707, -0.707),
+                    ] {
+                        source.push_str(&format!(
+                            "{{ let tap = {}(clamp(uv + blur_step * vec2<f32>({x:?}, {y:?}), vec2<f32>(0.000001), vec2<f32>(0.999999))); mist += tap.rgb * tap.a * 0.1; mist_alpha += tap.a * 0.1; }}\n",
+                            n(color),
+                        ));
+                    }
+                    source.push_str(&format!(
+                        "let backdrop = mix({}.rgb, mist / max(mist_alpha, 0.000001), amount * 0.85);\n",
+                        v(color),
+                    ));
+                    // Coverage mixes the complete lens, keeping antialiased rims free of displaced halos.
+                    return Some(format!(
+                        "vec4<f32>(mix(backdrop, lens, water.w * amount), {}.a)",
+                        v(color),
+                    ));
+                }
                 let kind = match kind {
                     WeatherKind::Droplets => 0,
                     WeatherKind::Rain => 1,
