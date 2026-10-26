@@ -380,6 +380,7 @@ impl Compiler<'_> {
             }
         };
         let mut source = include_str!("effects.wgsl").to_owned();
+        source.push_str(include_str!("droplets.wgsl"));
         for id in order {
             let node = self.graph.node(&id);
             let index = self.graph.index(&id);
