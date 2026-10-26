@@ -55,20 +55,68 @@ fn wisp_water_track(d: vec2<f32>, radius: f32, shape: vec2<f32>, seed: f32, acti
     let wet = exp(-q * q * 2.0) * taper * activity;
     return vec4<f32>(q * wet * 1.1, wet * 0.08, wet * radius * 0.06, wet * 0.8);
 }
+// Separate depths prevent the equally sharp, equally spaced streaks of a flat overlay.
+fn wisp_rain(uv: vec2<f32>, density: f32, size: f32, speed: f32, direction: f32, axis_scale: vec2<f32>) -> f32 {
+    let radius = clamp(size, 0.03, 0.45);
+    let shape = clamp(axis_scale, vec2<f32>(0.2), vec2<f32>(2.0));
+    let angle = radians(clamp(direction, -180.0, 180.0));
+    let across = vec2<f32>(cos(angle), -sin(angle));
+    let along = vec2<f32>(sin(angle), cos(angle));
+    let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
+    let physical = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let rain_position = vec2<f32>(dot(physical, across), dot(physical, along));
+    let t = globals.time * clamp(speed, 0.0, 5.0);
+    var coverage = 0.0;
+    for (var layer = 0; layer < 3; layer++) {
+        let depth = f32(layer);
+        let length_variation = 2.8 * (1.0 + 0.9 / (1.0 + depth * 2.0));
+        // Include the stretched footprint so long streaks do not pop at cell boundaries.
+        let reach = i32(ceil(radius * (0.7 + length_variation) * shape.y + 0.5));
+        let grid = clamp(density, 1.0, 32.0) * (1.0 + depth * 1.3);
+        let p = rain_position * grid + vec2<f32>(depth * 17.13, depth * 31.79);
+        let pixel = grid / max(globals.resolution.y, 1.0);
+        let base_x = i32(floor(p.x));
+        for (var x = -1; x <= 1; x++) {
+            let cell_x = base_x + x;
+            let column_seed = wisp_hash(vec2<i32>(cell_x, 137 + layer * 31));
+            // Distant drops cross the image more slowly while retaining rapid downward travel.
+            let velocity = (1.25 + column_seed * 0.8) * 1.7 / (1.0 + depth * 0.25);
+            let column_p = p - vec2<f32>(0.0, t * grid * velocity);
+            let base_y = i32(floor(column_p.y));
+            for (var y = -reach; y <= reach; y++) {
+                let cell = vec2<i32>(cell_x, base_y + y);
+                let seed = wisp_hash(cell + vec2<i32>(layer * 43, layer * 59));
+                let seed2 = wisp_hash(cell + vec2<i32>(71 + layer * 29, 19));
+                let variation = wisp_hash(cell + vec2<i32>(109, 83 + layer * 37));
+                if variation < 0.24 { continue; }
+                let center = vec2<f32>(cell) + vec2<f32>(seed, seed2);
+                let d = column_p - center;
+                let half_length = radius * (0.7 + seed2 * seed2 * length_variation) * shape.y;
+                let half_width = radius * (0.025 + seed * seed * 0.065) * shape.x;
+                let blur = half_width + pixel * (0.55 + (2.0 - depth) * 0.2);
+                if abs(d.x) > blur * 2.5 || abs(d.y) > half_length { continue; }
+                let longitudinal = d.y / half_length;
+                let tail = smoothstep(-1.0, -0.35, longitudinal);
+                let head = 1.0 - smoothstep(0.6, 1.0, longitudinal);
+                let cross_section = exp(-2.0 * d.x * d.x / (blur * blur));
+                // Subpixel drops lose brightness instead of becoming equally bright one-pixel lines.
+                let visibility = half_width / blur;
+                let opacity = (0.15 + variation * variation * 0.85) / (1.0 + depth * 0.6);
+                coverage += cross_section * tail * head * visibility * opacity;
+            }
+        }
+    }
+    return 1.0 - exp(-coverage * 1.6);
+}
 // Neighbor reach follows the maximum footprint (at most 7 x 7 cells), preventing
-// large or elongated drops from popping at cell boundaries. Coordinates are in
-// physical output units; rain direction rotates both motion and surface normals.
-fn wisp_weather(uv: vec2<f32>, density: f32, size: f32, speed: f32, kind: u32, direction: f32, axis_scale: vec2<f32>) -> vec4<f32> {
+// large or elongated drops from popping at cell boundaries.
+fn wisp_weather(uv: vec2<f32>, density: f32, size: f32, speed: f32, kind: u32, axis_scale: vec2<f32>) -> vec4<f32> {
     let grid = clamp(density, 1.0, 32.0);
     let radius = clamp(size, 0.03, 0.45);
     let shape = clamp(axis_scale, vec2<f32>(0.2), vec2<f32>(2.0));
     let t = globals.time * clamp(speed, 0.0, 5.0);
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
-    let angle = select(0.0, radians(clamp(direction, -180.0, 180.0)), kind == 1u);
-    let across = vec2<f32>(cos(angle), -sin(angle));
-    let along = vec2<f32>(sin(angle), cos(angle));
-    let physical = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0) * grid;
-    let p = vec2<f32>(dot(physical, across), dot(physical, along));
+    let p = (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0) * grid;
     let footprint = select(radius * 1.4 * shape * vec2<f32>(1.12, 1.85), vec2<f32>(0.8 * 1.4) * shape, kind == 2u);
     let reach = vec2<i32>(ceil(max(footprint, vec2<f32>(0.0, 0.85)) + vec2<f32>(0.33)));
     let base_x = i32(floor(p.x));
@@ -80,9 +128,8 @@ fn wisp_weather(uv: vec2<f32>, density: f32, size: f32, speed: f32, kind: u32, d
         let cycle = t * (0.07 + column_seed * 0.04) + column_seed * 5.0;
         let phase = fract(cycle);
         let slide = floor(cycle) * 1.2 + smoothstep(0.62, 0.92, phase) * 1.2 + t * 0.01;
-        let travel = select(slide, t * (1.1 + column_seed * 1.7), kind == 1u);
-        let column_p = p - vec2<f32>(0.0, select(travel, 0.0, kind == 2u));
-        let activity = select(smoothstep(0.60, 0.70, phase) * (1.0 - smoothstep(0.94, 1.0, phase)), 1.0, kind == 1u) * select(0.0, 1.0, speed > 0.0);
+        let column_p = p - vec2<f32>(0.0, select(slide, 0.0, kind == 2u));
+        let activity = (smoothstep(0.60, 0.70, phase) * (1.0 - smoothstep(0.94, 1.0, phase))) * select(0.0, 1.0, speed > 0.0);
         let base_y = i32(floor(column_p.y));
         for (var y = -3; y <= 3; y++) {
             if abs(y) > reach.y { continue; }
@@ -103,23 +150,17 @@ fn wisp_weather(uv: vec2<f32>, density: f32, size: f32, speed: f32, kind: u32, d
                 result += vec4<f32>(slope, ring * radius * variation * 0.18, ring);
             } else {
                 let drop_radius = radius * variation;
-                let breathing = select(0.94 + 0.06 * sin(t * 0.35 + seed * 6.2831853), 1.0, kind == 1u);
-                let elongation = select(0.9 + seed * 0.35, 1.25 + seed * 0.6, kind == 1u);
+                let breathing = 0.94 + 0.06 * sin(t * 0.35 + seed * 6.2831853);
+                let elongation = 0.9 + seed * 0.35;
                 var cap = wisp_water_cap(d / shape, drop_radius * breathing, elongation, seed);
                 cap = vec4<f32>(cap.xy / shape, cap.zw);
                 if cap.z > result.z { result = cap; }
                 let track = wisp_water_track(d, drop_radius, shape, seed, activity);
                 if track.z > result.z { result = track; }
-                if kind == 1u {
-                    var bead = wisp_water_cap(d / shape + vec2<f32>(drop_radius * 0.14, drop_radius * 2.4), drop_radius * 0.23, 1.0, seed2);
-                    bead = vec4<f32>(bead.xy / shape, bead.zw);
-                    if bead.z > result.z { result = bead; }
-                }
             }
         }
     }
-    let slope = across * result.x + along * result.y;
-    return vec4<f32>(slope, result.z / grid, clamp(result.w, 0.0, 1.0));
+    return vec4<f32>(result.xy, result.z / grid, clamp(result.w, 0.0, 1.0));
 }
 fn wisp_water_light(normal: vec3<f32>, coverage: f32) -> vec4<f32> {
     let reflection = reflect(vec3<f32>(0.0, 0.0, -1.0), normal);

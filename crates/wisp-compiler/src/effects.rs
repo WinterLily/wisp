@@ -120,6 +120,14 @@ impl Compiler<'_> {
                 size_x,
                 size_y,
             } => {
+                if *kind == WeatherKind::Rain {
+                    source.push_str(&format!("let streak = wisp_rain({}, {}, {}, {}, {rain_direction:?}, vec2<f32>({size_x:?}, {size_y:?}));\nlet domain = select(0.0, 1.0, all({} >= vec2<f32>(0.0)) && all({} <= vec2<f32>(1.0)));\nlet amount = streak * clamp({}, 0.0, 1.0) * clamp({}, 0.0, 1.0) * domain;\n", v(uv), v(density), v(size), v(speed), v(uv), v(uv), v(mask), v(strength)));
+                    return Some(format!(
+                        "vec4<f32>(mix({}.rgb, vec3<f32>(0.65, 0.78, 0.88), amount * 0.65), {}.a)",
+                        v(color),
+                        v(color)
+                    ));
+                }
                 if *kind == WeatherKind::Droplets {
                     source.push_str(&format!(
                         "let water = wisp_glass_droplets({}, {}, {}, {}, vec2<f32>({size_x:?}, {size_y:?}));\n\
@@ -175,7 +183,7 @@ impl Compiler<'_> {
                     WeatherKind::Rain => 1,
                     WeatherKind::Ripples => 2,
                 };
-                source.push_str(&format!("let water = wisp_weather({}, {}, {}, {}, {kind}u, {rain_direction:?}, vec2<f32>({size_x:?}, {size_y:?}));\nlet domain = select(0.0, 1.0, all({} >= vec2<f32>(0.0)) && all({} <= vec2<f32>(1.0)));\nlet amount = clamp({}, 0.0, 1.0) * clamp({}, 0.0, 1.0) * domain;\nlet normal = normalize(vec3<f32>(water.xy, 1.0));\nlet ray = refract(vec3<f32>(0.0, 0.0, -1.0), normal, 0.7501875);\nlet aspect = globals.resolution.x / max(globals.resolution.y, 1.0);\nlet offset = ray.xy / max(abs(ray.z), 0.1) * water.z * 2.8 / vec2<f32>(aspect, 1.0);\nlet refracted = {}(clamp(uv + offset * amount, vec2<f32>(0.000001), vec2<f32>(0.999999)));\nlet lighting = wisp_water_light(normal, water.w) * amount;\n", v(uv), v(density), v(size), v(speed), v(uv), v(uv), v(mask), v(strength), n(color)));
+                source.push_str(&format!("let water = wisp_weather({}, {}, {}, {}, {kind}u, vec2<f32>({size_x:?}, {size_y:?}));\nlet domain = select(0.0, 1.0, all({} >= vec2<f32>(0.0)) && all({} <= vec2<f32>(1.0)));\nlet amount = clamp({}, 0.0, 1.0) * clamp({}, 0.0, 1.0) * domain;\nlet normal = normalize(vec3<f32>(water.xy, 1.0));\nlet ray = refract(vec3<f32>(0.0, 0.0, -1.0), normal, 0.7501875);\nlet aspect = globals.resolution.x / max(globals.resolution.y, 1.0);\nlet offset = ray.xy / max(abs(ray.z), 0.1) * water.z * 2.8 / vec2<f32>(aspect, 1.0);\nlet refracted = {}(clamp(uv + offset * amount, vec2<f32>(0.000001), vec2<f32>(0.999999)));\nlet lighting = wisp_water_light(normal, water.w) * amount;\n", v(uv), v(density), v(size), v(speed), v(uv), v(uv), v(mask), v(strength), n(color)));
                 "vec4<f32>(refracted.rgb * (1.0 - lighting.a * 0.85) + lighting.rgb, refracted.a)"
                     .into()
             }
